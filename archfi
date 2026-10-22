@@ -1217,11 +1217,17 @@ archsettime(){
 archsettimeutcchroot(){
 	echo "hwclock --systohc --utc"
 	hwclock --systohc --utc
+	# Keep the clock right with NTP (systemd-timesyncd is part of systemd, only disabled by default)
+	echo "systemctl enable systemd-timesyncd"
+	systemctl enable systemd-timesyncd
 	exit
 }
 archsettimelocalchroot(){
 	echo "hwclock --systohc --localtime"
 	hwclock --systohc --localtime
+	# Keep the clock right with NTP (systemd-timesyncd is part of systemd, only disabled by default)
+	echo "systemctl enable systemd-timesyncd"
+	systemctl enable systemd-timesyncd
 	exit
 }
 
