@@ -13,7 +13,7 @@
 # reference : https://wiki.archlinux.org/index.php/Installation_guide
 
 
-apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.09.37.18 (GPLv3)"
+apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.09.49.32 (GPLv3)"
 archdiurl=https://raw.githubusercontent.com/sevenzip2/archdi/master/archdi
 cpl=0
 fspkgs=""
@@ -497,10 +497,10 @@ formatdevices(){
 	if (dialog --backtitle "${apptitle}" --title "${txtformatdevices}" --defaultno --yesno "${txtformatdeviceconfirm}" 0 0) then
 		fspkgs=""
 		if [ ! "${bootdev}" = "" ]; then
-			formatbootdevice boot ${bootdev}
+			formatbootdevice boot ${bootdev} || return 1
 		fi
 		if [ ! "${swapdev}" = "" ]; then
-			formatswapdevice swap ${swapdev}
+			formatswapdevice swap ${swapdev} || return 1
 		fi
 		formatdevice root ${rootdev} || return 1
 		if [ ! "${homedev}" = "" ]; then
@@ -525,31 +525,33 @@ formatbootdevice(){
 	if [ ! "$?" = "0" ]; then
 		return 1
 	fi
+	fmtresult=0
 	clear
 	echo "${txtformatingpart//%1/${2}} ${sel}"
 	echo "----------------------------------------------"
 	case ${sel} in
 		ext2)
 			echo "mkfs.ext2 ${2}"
-			mkfs.ext2 ${2}
+			mkfs.ext2 ${2} || fmtresult=1
 		;;
 		ext3)
 			echo "mkfs.ext3 ${2}"
-			mkfs.ext3 ${2}
+			mkfs.ext3 ${2} || fmtresult=1
 		;;
 		ext4)
 			echo "mkfs.ext4 ${2}"
-			mkfs.ext4 ${2}
+			mkfs.ext4 ${2} || fmtresult=1
 		;;
 		fat32)
 			fspkgs="${fspkgs[@]} dosfstools"
 			# Without -F 32, mkfs.fat picks FAT16 on small partitions
 			echo "mkfs.fat -F 32 ${2}"
-			mkfs.fat -F 32 ${2}
+			mkfs.fat -F 32 ${2} || fmtresult=1
 		;;
 	esac
 	echo ""
 	pressanykey
+	return ${fmtresult}
 }
 formatswapdevice(){
 	options=()
@@ -560,18 +562,20 @@ formatswapdevice(){
 	if [ ! "$?" = "0" ]; then
 		return 1
 	fi
+	fmtresult=0
 	clear
 	echo "${txtformatingpart//%1/${swapdev}} swap"
 	echo "----------------------------------------------------"
 	case ${sel} in
 		swap)
 			echo "mkswap ${swapdev}"
-			mkswap ${swapdev}
+			mkswap ${swapdev} || fmtresult=1
 			echo ""
 			pressanykey
 		;;
 	esac
 	clear
+	return ${fmtresult}
 }
 formatdevice(){
 	options=()
@@ -591,6 +595,7 @@ formatdevice(){
 	if [ ! "$?" = "0" ]; then
 		return 1
 	fi
+	fmtresult=0
 	clear
 	echo "${txtformatingpart//%1/${2}} ${sel}"
 	echo "----------------------------------------------"
@@ -598,21 +603,24 @@ formatdevice(){
 		btrfs)
 			fspkgs="${fspkgs[@]} btrfs-progs"
 			echo "mkfs.btrfs -f ${2}"
-			mkfs.btrfs -f ${2}
-			if [ "${1}" = "root" ]; then
+			mkfs.btrfs -f ${2} || fmtresult=1
+			if [ "${1}" = "root" ]&&[ "${fmtresult}" = "0" ]; then
 				# Flat layout (snapper/timeshift friendly): @ / @home / @snapshots / @var_log / @swap
 				subvols="@ @snapshots @var_log @swap"
 				if [ "${homedev}" = "" ]; then
 					subvols="@ @home @snapshots @var_log @swap"
 				fi
 				echo "mount ${2} /mnt"
-				mount ${2} /mnt
-				for subvol in ${subvols}; do
-					echo "btrfs subvolume create /mnt/${subvol}"
-					btrfs subvolume create /mnt/${subvol}
-				done
-				echo "umount /mnt"
-				umount /mnt
+				if mount ${2} /mnt; then
+					for subvol in ${subvols}; do
+						echo "btrfs subvolume create /mnt/${subvol}"
+						btrfs subvolume create /mnt/${subvol} || fmtresult=1
+					done
+					echo "umount /mnt"
+					umount /mnt
+				else
+					fmtresult=1
+				fi
 				pressanykey
 				selectbtrfscompress
 				clear
@@ -621,30 +629,30 @@ formatdevice(){
 		;;
 		ext4)
 			echo "mkfs.ext4 ${2}"
-			mkfs.ext4 ${2}
+			mkfs.ext4 ${2} || fmtresult=1
 		;;
 		ext3)
 			echo "mkfs.ext3 ${2}"
-			mkfs.ext3 ${2}
+			mkfs.ext3 ${2} || fmtresult=1
 		;;
 		ext2)
 			echo "mkfs.ext2 ${2}"
-			mkfs.ext2 ${2}
+			mkfs.ext2 ${2} || fmtresult=1
 		;;
 		xfs)
 			fspkgs="${fspkgs[@]} xfsprogs"
 			echo "mkfs.xfs -f ${2}"
-			mkfs.xfs -f ${2}
+			mkfs.xfs -f ${2} || fmtresult=1
 		;;
 		f2fs)
 			fspkgs="${fspkgs[@]} f2fs-tools"
 			echo "mkfs.f2fs -f $2"
-			mkfs.f2fs -f $2
+			mkfs.f2fs -f $2 || fmtresult=1
 		;;
 		jfs)
 			fspkgs="${fspkgs[@]} jfsutils"
 			echo "mkfs.jfs -f ${2}"
-			mkfs.jfs -f ${2}
+			mkfs.jfs -f ${2} || fmtresult=1
 		;;
 		luks)
 			if [ -e /dev/mapper/${1} ]; then
@@ -698,7 +706,9 @@ formatdevice(){
 			fi
 			echo ""
 			pressanykey
+			# The container is open even when its file system is cancelled or fails, keep its state
 			formatdevice ${1} /dev/mapper/${1} noluks
+			innerresult=$?
 			if [ "${1}" = "root" ]; then
 				realrootdev=${2}
 				rootdev=/dev/mapper/${1}
@@ -712,12 +722,16 @@ formatdevice(){
 				luksdrive=1
 				crypttab="\n${1}    UUID=$(cryptsetup luksUUID ${2})    none"
 			fi
+			if [ ! "${innerresult}" = "0" ]; then
+				return 1
+			fi
 			echo ""
 			echo "${txtluksdevicecreated}"
 		;;
 	esac
 	echo ""
 	pressanykey
+	return ${fmtresult}
 }
 
 selectbtrfscompress(){
@@ -2205,8 +2219,14 @@ archextrasmenu(){
 	options=()
 	options+=("nano" "" on)
 	options+=("vim" "" on)
-	options+=("dhcpcd" "" on)
-	options+=("networkmanager" "(replaces the dhcpcd service)" off)
+	# Preselect the network service already enabled on the new system
+	if [ -L /mnt/etc/systemd/system/multi-user.target.wants/NetworkManager.service ]; then
+		options+=("dhcpcd" "" off)
+		options+=("networkmanager" "(replaces the dhcpcd service)" on)
+	else
+		options+=("dhcpcd" "" on)
+		options+=("networkmanager" "(replaces the dhcpcd service)" off)
+	fi
 	sel=$(dialog --backtitle "${apptitle}" --title "${txtextrasmenu}" --checklist "" 0 0 0 \
 		"${options[@]}" \
 		3>&1 1>&2 2>&3)
@@ -2228,7 +2248,11 @@ archextrasmenu(){
 }
 archenabledhcpcdchroot(){
 	echo "systemctl enable dhcpcd"
-	systemctl enable dhcpcd
+	systemctl enable dhcpcd || exit 1
+	if systemctl is-enabled -q NetworkManager 2>/dev/null; then
+		echo "systemctl disable NetworkManager"
+		systemctl disable NetworkManager
+	fi
 	exit
 }
 
