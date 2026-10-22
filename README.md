@@ -2,27 +2,25 @@
 
 Just a simple bash script wizard to install Arch Linux after you have booted on the official Arch Linux install media.
 
+This is a maintained fork of [MatMoul/archfi](https://github.com/MatMoul/archfi), updated for current Arch Linux.
+
 With this script, you can install Arch Linux with two simple terminal commands.
 
 This wizard is made to install minimum packages (Base, bootloader and optionally archdi).
 
-At the end of this wizard, you can install or launch [archdi](https://github.com/MatMoul/archdi) (Arch Linux Desktop Install) to install and configure desktop packages.
+At the end of this wizard, you can install or launch [archdi](https://github.com/sevenzip2/archdi) (Arch Linux Desktop Install) to install and configure desktop packages.
 
-You can watch my videos to see how to use it [here](https://www.youtube.com/playlist?list=PLytHgIKLV1caHlCrcTSkm5OF2WSVI1_Sq).
+You can watch the original author's videos to see how to use it [here](https://www.youtube.com/playlist?list=PLytHgIKLV1caHlCrcTSkm5OF2WSVI1_Sq).
 
 ## How to use
 
-First, boot with the [last Arch Linux image](https://www.archlinux.org/download/) with a [bootable device](https://wiki.archlinux.org/index.php/USB_flash_installation_media).
+First, boot with the [latest Arch Linux image](https://archlinux.org/download/) with a [bootable device](https://wiki.archlinux.org/title/USB_flash_installation_medium).
 
-Then make sure you have Internet connection on the Arch iso. If you have a wireless connection the [`iwctl`](https://wiki.archlinux.org/index.php/Iwd#iwctl) command might be useful to you. You can also read the [Network configuration](https://wiki.archlinux.org/index.php/Network_configuration) from the Arch Linux guide for more detailed instructions.
+Then make sure you have Internet connection on the Arch iso. If you have a wireless connection the [`iwctl`](https://wiki.archlinux.org/title/Iwd#iwctl) command might be useful to you. You can also read the [Network configuration](https://wiki.archlinux.org/title/Network_configuration) from the Arch Linux guide for more detailed instructions.
 
 Then download the script with from the command line:
 
-    curl -LO archfi.sf.net/archfi
-
-If SourceForge is down, use this instead:
-
-    curl -LO matmoul.github.io/archfi
+    curl -fsSLO https://raw.githubusercontent.com/sevenzip2/archfi/master/archfi
 
 Finally, launch the script:
 
@@ -46,4 +44,4 @@ You can test your script with this command :
 
 Example :
 
-    sh archfi -t matmoul master
+    sh archfi -t sevenzip2 master

@@ -2,18 +2,20 @@
 
 # Arch Linux Fast Install (archfi)
 # --------------------------------
-# author    : MatMoul
+# author    : MatMoul (original author)
 #             https://github.com/MatMoul
-#             http://sourceforge.net/u/matmoul
-# project   : https://github.com/MatMoul/archfi
-#             http://sourceforge.net/projects/archfi/
-# license   : LGPL-3.0 (http://opensource.org/licenses/lgpl-3.0.html)
+# maintainer: sevenzip2 (fork)
+#             https://github.com/sevenzip2
+# project   : https://github.com/sevenzip2/archfi
+# upstream  : https://github.com/MatMoul/archfi
+# license   : GPL-3.0 (https://www.gnu.org/licenses/gpl-3.0.html)
 #
 # reference : https://wiki.archlinux.org/index.php/Installation_guide
 
 
 apptitle="Arch Linux Fast Install (archfi) - Version: 2022.11.21.01.44.43 (GPLv3)"
-baseurl=https://raw.githubusercontent.com/MatMoul/archfi/master
+baseurl=https://raw.githubusercontent.com/sevenzip2/archfi/master
+archdiurl=https://raw.githubusercontent.com/sevenzip2/archdi/master/archdi
 cpl=0
 skipfont="0"
 fspkgs=""
@@ -82,6 +84,7 @@ chooselanguage(){
 	options=()
 	options+=("Arabic" "(By Mohammad Alawadi)")
 	options+=("Brazilian" "(By MaxWilliamJF)")
+	options+=("Chinese" "(By chery)")
 	options+=("Dutch" "(By bowero)")
 	options+=("English" "(By MatMoul)")
 	options+=("French" "(By MatMoul)")
@@ -100,13 +103,12 @@ chooselanguage(){
 		3>&1 1>&2 2>&3)
 	if [ "$?" = "0" ]; then
 		clear
-		if [ "${sel}" = "English" ]; then
-			loadstrings
-		else
-			eval $(curl -L ${baseurl}/lng/${sel} | sed '/^#/ d')
+		loadstrings
+		if [ "${sel}" != "English" ]; then
+			loadlanguage "${sel}"
 		fi
-		if [ "${skipfont}" = "0" ]; then
-			eval $(setfont ${font})
+		if [ "${skipfont}" = "0" ]&&[ "${font}" != "" ]; then
+			setfont ${font}
 		fi
 		font=
 		if [ "$(cat /etc/locale.gen | grep ""#${locale}"")" != "" ]; then
@@ -118,15 +120,10 @@ chooselanguage(){
 }
 
 setkeymap(){
-	#items=$(localectl list-keymaps)
-	#options=()
-	#for item in ${items}; do
-	#  options+=("${item}" "")
-	#done
-	items=$(find /usr/share/kbd/keymaps/ -type f -printf "%f\n" | sort -V)
+	items=$(listkeymaps)
 	options=()
 	for item in ${items}; do
-		options+=("${item%%.*}" "")
+		options+=("${item}" "")
 	done
 	keymap=$(dialog --backtitle "${apptitle}" --title "${txtsetkeymap}" --menu "" 0 0 0 \
 		"${options[@]}" \
@@ -157,6 +154,36 @@ chooseeditor(){
 	fi
 }
 
+loadlanguage(){
+	# Language files are downloaded over HTTPS and only sourced when they
+	# contain plain variable assignments (no command substitution).
+	lngfile=$(mktemp /tmp/archfi-lng.XXXXXX)
+	echo "curl -fsSL ${baseurl}/lng/${1}"
+	if ! curl -fsSL "${baseurl}/lng/${1}" -o "${lngfile}"; then
+		echo "Error downloading language file ${1}"
+		rm -f "${lngfile}"
+		pressanykey
+		return 1
+	fi
+	if grep -qvE '^[[:space:]]*(#.*)?$|^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "${lngfile}" \
+		|| grep -qE '\$\(|`' "${lngfile}"; then
+		echo "Invalid language file ${1}, ignored"
+		rm -f "${lngfile}"
+		pressanykey
+		return 1
+	fi
+	source "${lngfile}"
+	rm -f "${lngfile}"
+}
+
+listkeymaps(){
+	items=$(localectl list-keymaps 2>/dev/null)
+	if [ "${items}" = "" ]; then
+		items=$(find /usr/share/kbd/keymaps/ -type f -name "*.map.gz" -printf "%f\n" | sed 's/\.map\.gz$//' | sort -V)
+	fi
+	echo "${items}"
+}
+
 rebootpc(){
 	if (dialog --backtitle "${apptitle}" --title "${txtreboot}" --defaultno --yesno "${txtreboot} ?" 0 0) then
 		clear
@@ -178,13 +205,30 @@ selectdisk(){
 				options+=("${item}" "")
 		done
 		IFS=$IFS_ORIG
-		result=$(dialog --backtitle "${APPTITLE}" --title "${1}" --menu "" 0 0 0 "${options[@]}" 3>&1 1>&2 2>&3)
+		result=$(dialog --backtitle "${apptitle}" --title "${1}" --menu "" 0 0 0 "${options[@]}" 3>&1 1>&2 2>&3)
 		if [ "$?" != "0" ]
 		then
 				return 1
 		fi
 		echo ${result%%\ *}
 		return 0    
+}
+
+partdev(){
+	# Partition path of disk ${1} number ${2} (sda -> sda1, nvme0n1 -> nvme0n1p1, mmcblk0 -> mmcblk0p1)
+	if [[ "${1}" =~ [0-9]$ ]]; then
+		echo "${1}p${2}"
+	else
+		echo "${1}${2}"
+	fi
+}
+
+parentdisk(){
+	echo "/dev/$(lsblk -no PKNAME "${1}" | head -n1)"
+}
+
+partnumber(){
+	cat "/sys/class/block/$(basename "$(realpath "${1}")")/partition"
 }
 
 diskpartmenu(){
@@ -261,15 +305,9 @@ diskpartautodos(){
 			sleep 1
 			echo ""
 			pressanykey
-			if [ "${device::8}" == "/dev/nvm" ]; then
-				bootdev=${device}"p1"
-				swapdev=${device}"p2"
-				rootdev=${device}"p3"
-			else
-				bootdev=${device}"1"
-				swapdev=${device}"2"
-				rootdev=${device}"3"
-			fi
+			bootdev=$(partdev ${device} 1)
+			swapdev=$(partdev ${device} 2)
+			rootdev=$(partdev ${device} 3)
 			efimode="0"
 		fi
 	fi
@@ -294,15 +332,9 @@ diskpartautogpt(){
 			sgdisk ${device} -n=4:0:0 -c=0:root
 			echo ""
 			pressanykey
-			if [ "${device::8}" == "/dev/nvm" ]; then
-				bootdev=${device}"p2"
-				swapdev=${device}"p3"
-				rootdev=${device}"p4"
-			else
-				bootdev=${device}"2"
-				swapdev=${device}"3"
-				rootdev=${device}"4"
-			fi
+			bootdev=$(partdev ${device} 2)
+			swapdev=$(partdev ${device} 3)
+			rootdev=$(partdev ${device} 4)
 			efimode="0"
 		fi
 	fi
@@ -325,15 +357,9 @@ diskpartautoefi(){
 			sgdisk ${device} -n=3:0:0 -c=0:root
 			echo ""
 			pressanykey
-			if [ "${device::8}" == "/dev/nvm" ]; then
-				bootdev=${device}"p1"
-				swapdev=${device}"p2"
-				rootdev=${device}"p3"
-			else
-				bootdev=${device}"1"
-				swapdev=${device}"2"
-				rootdev=${device}"3"
-			fi
+			bootdev=$(partdev ${device} 1)
+			swapdev=$(partdev ${device} 2)
+			rootdev=$(partdev ${device} 3)
 			efimode="1"
 		fi
 	fi
@@ -356,15 +382,9 @@ diskpartautoefiusb(){
 			echo -e "r\nh\n3\nN\n\nY\nN\nw\nY\n" | gdisk ${device}
 			echo ""
 			pressanykey
-			if [ "${device::8}" == "/dev/nvm" ]; then
-				bootdev=${device}"p1"
-				swapdev=
-				rootdev=${device}"p3"
-			else
-				bootdev=${device}"1"
-				swapdev=
-				rootdev=${device}"3"
-			fi
+			bootdev=$(partdev ${device} 1)
+			swapdev=
+			rootdev=$(partdev ${device} 3)
 			efimode="2"
 		fi
 	fi
@@ -578,7 +598,6 @@ formatdevice(){
 	options+=("xfs" "")
 	options+=("f2fs" "")
 	options+=("jfs" "")
-	options+=("reiserfs" "")
 	if [ ! "${3}" = "noluks" ]; then
 		options+=("luks" "encrypted")
 	fi
@@ -633,11 +652,6 @@ formatdevice(){
 			fspkgs="${fspkgs[@]} jfsutils"
 			echo "mkfs.jfs -f ${2}"
 			mkfs.jfs -f ${2}
-		;;
-		reiserfs)
-			fspkgs="${fspkgs[@]} reiserfsprogs"
-			echo "mkfs.reiserfs -f ${2}"
-			mkfs.reiserfs -f ${2}
 		;;
 		luks)
 			echo "${txtcreateluksdevice}"
@@ -762,7 +776,7 @@ installmenu(){
 			;;
 			"${txtparalleldownloads}")
 				paralleldownloads
-				nextitem="${txtinstallarchlinuk}"
+				nextitem="${txtinstallarchlinux}"
 			;;
 			"${txtinstallarchlinux}")
 				if(installbase) then
@@ -792,7 +806,7 @@ selectmirrorsbycountry() {
 				options+=("${item}" "")
 		done
 		IFS=$IFS_ORIG
-		country=$(dialog --backtitle "${APPTITLE}" --title "${txtselectcountry}" --menu "" 0 0 0 "${options[@]}" 3>&1 1>&2 2>&3)
+		country=$(dialog --backtitle "${apptitle}" --title "${txtselectcountry}" --menu "" 0 0 0 "${options[@]}" 3>&1 1>&2 2>&3)
 		if [ "$?" != "0" ]; then
 				return 1    
 		fi
@@ -858,6 +872,14 @@ installbase(){
 	
 	options=()
 	options+=("linux-firmware" "(${txtoptional})" on)
+	case $(grep -m1 vendor_id /proc/cpuinfo | awk '{ print $3 }') in
+		GenuineIntel) options+=("intel-ucode" "(CPU microcode)" on);;
+		AuthenticAMD) options+=("amd-ucode" "(CPU microcode)" on);;
+		*)
+			options+=("intel-ucode" "(CPU microcode)" off)
+			options+=("amd-ucode" "(CPU microcode)" off)
+		;;
+	esac
 	sel=$(dialog --backtitle "${apptitle}" --title "${txtinstallarchlinuxfirmwares}" --checklist "" 0 0 0 \
 		"${options[@]}" \
 		3>&1 1>&2 2>&3)
@@ -894,13 +916,8 @@ installbase(){
 	else
 		options+=("jfsutils" "" off)
 	fi
-	if [[ "${fspkgs}" == *"reiserfsprogs"* ]]; then
-		options+=("reiserfsprogs" "" on)
-	else
-		options+=("reiserfsprogs" "" off)
-	fi
 	options+=("lvm2" "" off)
-	options+=("dmraid" "" off)
+	options+=("mdadm" "" off)
 	sel=$(dialog --backtitle "${apptitle}" --title "${txtinstallarchlinuxfilesystems}" --checklist "" 0 0 0 \
 		"${options[@]}" \
 		3>&1 1>&2 2>&3)
@@ -930,8 +947,8 @@ installbase(){
 	fi
 	
 	clear
-	echo "pacstrap /mnt ${pkgs}"
-	pacstrap /mnt ${pkgs}
+	echo "pacstrap -K /mnt ${pkgs}"
+	pacstrap -K /mnt ${pkgs}
 	if [ ! -z $numpkg ]; then
 		sed -i "s/.*ParallelDownloads.*/ParallelDownloads = ${numpkg}/" /mnt/etc/pacman.conf	
 	fi	
@@ -1109,19 +1126,14 @@ archsethostname(){
 }
 
 archsetkeymap(){
-	#items=$(localectl list-keymaps)
-	#options=()
-	#for item in ${items}; do
-	#  options+=("${item}" "")
-	#done
-	items=$(find /usr/share/kbd/keymaps/ -type f -printf "%f\n" | sort -V)
+	items=$(listkeymaps)
 	options=()
 	defsel=""
 	for item in ${items}; do
-		if [ "${item%%.*}" == "${keymap}" ]; then
-			defsel="${item%%.*}"
+		if [ "${item}" == "${keymap}" ]; then
+			defsel="${item}"
 		fi
-		options+=("${item%%.*}" "")
+		options+=("${item}" "")
 	done
 	keymap=$(dialog --backtitle "${apptitle}" --title "${txtsetkeymap}" --default-item "${defsel}" --menu "" 0 0 0 \
 		"${options[@]}" \
@@ -1153,26 +1165,27 @@ archsetfont(){
 }
 
 archsetlocale(){
-	items=$(ls /usr/share/i18n/locales)
+	items=$(grep ' UTF-8$' /mnt/usr/share/i18n/SUPPORTED | cut -d' ' -f1)
 	options=()
 	defsel=""
 	for item in ${items}; do
-		if [ "${defsel}" == "" ]&&[ "${keymap::2}" == "${item::2}" ]; then
+		if [ "${item}" == "${locale}" ]; then
 			defsel="${item}"
 		fi
 		options+=("${item}" "")
 	done
-	locale=$(dialog --backtitle "${apptitle}" --title "${txtsetlocale}" --default-item "${defsel}" --menu "" 0 0 0 \
+	sel=$(dialog --backtitle "${apptitle}" --title "${txtsetlocale}" --default-item "${defsel}" --menu "" 0 0 0 \
 		"${options[@]}" \
 		3>&1 1>&2 2>&3)
 	if [ "$?" = "0" ]; then
+		locale=${sel}
 		clear
-		echo "echo \"LANG=${locale}.UTF-8\" > /mnt/etc/locale.conf"
-		echo "LANG=${locale}.UTF-8" > /mnt/etc/locale.conf
+		echo "echo \"LANG=${locale}\" > /mnt/etc/locale.conf"
+		echo "LANG=${locale}" > /mnt/etc/locale.conf
 		echo "echo \"LC_COLLATE=C\" >> /mnt/etc/locale.conf"
 		echo "LC_COLLATE=C" >> /mnt/etc/locale.conf
-		echo "sed -i '/#${locale}.UTF-8/s/^#//g' /mnt/etc/locale.gen"
-		sed -i '/#'${locale}'.UTF-8/s/^#//g' /mnt/etc/locale.gen
+		echo "sed -i '/^#${locale} UTF-8/s/^#//' /mnt/etc/locale.gen"
+		sed -i "/^#${locale} UTF-8/s/^#//" /mnt/etc/locale.gen
 		archchroot setlocale
 		pressanykey
 	fi
@@ -1184,7 +1197,8 @@ archsetlocalechroot(){
 }
 
 archsettime(){
-	items=$(ls -l /mnt/usr/share/zoneinfo/ | grep '^d' | gawk -F':[0-9]* ' '/:/{print $2}')
+	zones=$(timedatectl list-timezones)
+	items=$(echo "${zones}" | cut -d/ -f1 | sort -u)
 	options=()
 	for item in ${items}; do
 		options+=("${item}" "")
@@ -1197,35 +1211,37 @@ archsettime(){
 		return 1
 	fi
 
+	items=$(echo "${zones}" | grep "^${timezone}/" | cut -d/ -f2-)
+	if [ "${items}" != "" ]; then
+		options=()
+		for item in ${items}; do
+			options+=("${item}" "")
+		done
 
-	items=$(ls /mnt/usr/share/zoneinfo/${timezone}/)
-	options=()
-	for item in ${items}; do
-		options+=("${item}" "")
-	done
-
-	timezone=${timezone}/$(dialog --backtitle "${apptitle}" --title "${txtsettime}" --menu "" 0 0 0 \
-		"${options[@]}" \
-		3>&1 1>&2 2>&3)
-	if [ ! "$?" = "0" ]; then
-		return 1
+		sel=$(dialog --backtitle "${apptitle}" --title "${txtsettime}" --menu "" 0 0 0 \
+			"${options[@]}" \
+			3>&1 1>&2 2>&3)
+		if [ ! "$?" = "0" ]; then
+			return 1
+		fi
+		timezone=${timezone}/${sel}
 	fi
 
 	clear
-	echo "ln -sf /mnt/usr/share/zoneinfo/${timezone} /mnt/etc/localtime"
+	echo "ln -sf /usr/share/zoneinfo/${timezone} /mnt/etc/localtime"
 	ln -sf /usr/share/zoneinfo/${timezone} /mnt/etc/localtime
 	pressanykey
 
 	options=()
-	options+=("UTC" "")
-	options+=("Local" "")
+	options+=("${txthwclockutc}" "")
+	options+=("${txthwclocklocal}" "")
 	sel=$(dialog --backtitle "${apptitle}" --title "${txtsettime}" --menu "${txthwclock}" 0 0 0 \
 		"${options[@]}" \
 		3>&1 1>&2 2>&3)
 	if [ ! "$?" = "0" ]; then
 		return 1
 	fi
-	
+
 	clear
 	case ${sel} in
 		"${txthwclockutc}")
@@ -1235,14 +1251,6 @@ archsettime(){
 			archchroot settimelocal
 		;;
 	esac
-	
-#	if (dialog --backtitle "${apptitle}" --title "${txtsettime}" --yesno "${txtuseutcclock}" 0 0) then
-#		clear
-#		archchroot settimeutc
-#	else
-#		clear
-#		archchroot settimelocal
-#	fi
 
 	pressanykey
 
@@ -1316,10 +1324,42 @@ archgencrypttab(){
 	pressanykey
 }
 
+archhooks(){
+	cat /mnt/etc/mkinitcpio.conf /mnt/etc/mkinitcpio.conf.d/*.conf 2>/dev/null | grep '^HOOKS=' | tail -n1
+}
+archsystemdinitramfs(){
+	# mkinitcpio defaults to a systemd based initramfs (systemd, sd-vconsole, sd-encrypt hooks)
+	[[ "$(archhooks)" =~ [\(\ ]systemd[\)\ ] ]]
+}
+archcryptparams(){
+	if archsystemdinitramfs; then
+		echo "rd.luks.name=${luksrootuuid}=root"
+	else
+		echo "cryptdevice=UUID=${luksrootuuid}:root"
+	fi
+}
+archrootparams(){
+	if [ "${luksroot}" = "1" ]; then
+		echo "$(archcryptparams) root=/dev/mapper/root"
+	else
+		echo "root=UUID=$(blkid -s UUID -o value ${rootdev})"
+	fi
+}
+archkernels(){
+	for kernel in /mnt/boot/vmlinuz-*; do
+		[ -f "${kernel}" ] && echo "${kernel#/mnt/boot/vmlinuz-}"
+	done
+}
+
 archgenmkinitcpioluks(){
 	clear
-	echo "sed -i \"s/block filesystems/block encrypt filesystems/g\" /mnt/etc/mkinitcpio.conf"
-	sed -i "s/block filesystems/block encrypt filesystems/g" /mnt/etc/mkinitcpio.conf
+	if archsystemdinitramfs; then
+		crypthook=sd-encrypt
+	else
+		crypthook=encrypt
+	fi
+	echo "sed -i \"/^HOOKS=/ { /encrypt/! s/ filesystems/ ${crypthook} filesystems/ }\" /mnt/etc/mkinitcpio.conf"
+	sed -i "/^HOOKS=/ { /encrypt/! s/ filesystems/ ${crypthook} filesystems/ }" /mnt/etc/mkinitcpio.conf
 	archchroot genmkinitcpio
 	pressanykey
 }
@@ -1340,8 +1380,8 @@ archeditmkinitcpio(){
 	fi
 }
 archgenmkinitcpiochroot(){
-	echo "mkinitcpio -p linux"
-	mkinitcpio -p linux
+	echo "mkinitcpio -P"
+	mkinitcpio -P
 	exit
 }
 
@@ -1434,8 +1474,9 @@ archgrubinstall(){
 	if [ "${luksroot}" = "1" ]; then
 		if (dialog --backtitle "${apptitle}" --title "${txtinstall//%1/grub}" --yesno "${txtgrubluksdetected}" 0 0) then
 			clear
-			echo "sed -i /GRUB_CMDLINE_LINUX=/c\GRUB_CMDLINE_LINUX=\\\"cryptdevice=/dev/disk/by-uuid/${luksrootuuid}:root\\\" /mnt/etc/default/grub"
-			sed -i /GRUB_CMDLINE_LINUX=/c\GRUB_CMDLINE_LINUX=\"cryptdevice=/dev/disk/by-uuid/${luksrootuuid}:root\" /mnt/etc/default/grub
+			cryptparams=$(archcryptparams)
+			echo "sed -i \"/^GRUB_CMDLINE_LINUX=/c\GRUB_CMDLINE_LINUX=\\\"${cryptparams}\\\"\" /mnt/etc/default/grub"
+			sed -i "/^GRUB_CMDLINE_LINUX=/c\GRUB_CMDLINE_LINUX=\"${cryptparams}\"" /mnt/etc/default/grub
 			pressanykey
 		fi
 	fi
@@ -1563,16 +1604,9 @@ archsyslinuxinstall(){
 		additionalpkg=${additionalpkg}"efibootmgr "
 	fi
 
-	if [ "${isnvme}" = "1" ]; then
-		if [ "$(parted ${realrootdev::(-2)} print|grep gpt)" != "" ]; then
-			echo "${txtsyslinuxaddgptfdisk}"
-			additionalpkg=${additionalpkg}"gptfdisk "
-		fi
-	else
-		if [ "$(parted ${realrootdev::8} print|grep gpt)" != "" ]; then
-			echo "${txtsyslinuxaddgptfdisk}"
-			additionalpkg=${additionalpkg}"gptfdisk "
-		fi
+	if [ "$(parted $(parentdisk ${realrootdev}) print|grep gpt)" != "" ]; then
+		echo "${txtsyslinuxaddgptfdisk}"
+		additionalpkg=${additionalpkg}"gptfdisk "
 	fi
 
 	if [ "${bootdev}" != "" ]; then
@@ -1588,13 +1622,9 @@ archsyslinuxinstall(){
 
 	clear
 	echo "Updating /boot/syslinux/syslinux.cfg"
-	if [ "${luksroot}" = "1" ]; then
-		echo "sed -i \"/APPEND\ root=/c\    APPEND root=/dev/mapper/root cryptdevice=${realrootdev}:root rw\" /mnt/boot/syslinux/syslinux.cfg"
-		sed -i "/APPEND\ root=/c\    APPEND root=/dev/mapper/root cryptdevice=${realrootdev}:root\ rw" /mnt/boot/syslinux/syslinux.cfg
-	else
-		echo "sed -i \"/APPEND\ root=/c\    APPEND root=${rootdev} rw\" /mnt/boot/syslinux/syslinux.cfg"
-		sed -i "/APPEND\ root=/c\    APPEND root=${rootdev}\ rw" /mnt/boot/syslinux/syslinux.cfg
-	fi
+	rootparams=$(archrootparams)
+	echo "sed -i \"/APPEND\ root=/c\    APPEND ${rootparams} rw\" /mnt/boot/syslinux/syslinux.cfg"
+	sed -i "/APPEND\ root=/c\    APPEND ${rootparams}\ rw" /mnt/boot/syslinux/syslinux.cfg
 
 	pressanykey
 }
@@ -1618,13 +1648,10 @@ archsyslinuxinstallbootloaderefichroot(){
 	if [ ! "${1}" = "none" ]; then
 		echo "cp -r /usr/lib/syslinux/efi64/* /boot/syslinux"
 		cp -r /usr/lib/syslinux/efi64/* /boot/syslinux
-		if [ "${1::8}" == "/dev/nvm" ]; then
-			echo "efibootmgr --create --disk ${1::(-2)} --part ${1:(-1)} --loader /syslinux/syslinux.efi --label "Syslinux" --verbose"
-			efibootmgr --create --disk ${1::(-2)} --part ${1:(-1)} --loader /syslinux/syslinux.efi --label "Syslinux" --verbose
-		else
-			echo "efibootmgr --create --disk ${1::8} --part ${1:(-1)} --loader /syslinux/syslinux.efi --label "Syslinux" --verbose"
-			efibootmgr --create --disk ${1::8} --part ${1:(-1)} --loader /syslinux/syslinux.efi --label "Syslinux" --verbose
-		fi
+		efidisk=$(parentdisk ${1})
+		efipart=$(partnumber ${1})
+		echo "efibootmgr --create --disk ${efidisk} --part ${efipart} --loader /syslinux/syslinux.efi --label "Syslinux" --verbose"
+		efibootmgr --create --disk ${efidisk} --part ${efipart} --loader /syslinux/syslinux.efi --label "Syslinux" --verbose
 		isvbox=$(lspci | grep "VirtualBox G")
 		if [ "${isvbox}" ]; then
 			echo "VirtualBox detected, creating startup.nsh..."
@@ -1652,7 +1679,7 @@ archbootloadersystemdbmenu(){
 		case ${sel} in
 			"${txtinstall//%1/systemd-boot}")
 				archsystemdinstall
-				nextblitem="${txtinstall//%1/loader.conf}"
+				nextblitem="${txtedit//%1/loader.conf}"
 			;;
 			"${txtedit//%1/loader.conf}")
 				${EDITOR} /mnt/boot/loader/loader.conf
@@ -1670,48 +1697,51 @@ archsystemdinstall(){
 	clear
 	archchroot systemdbootloaderinstall ${realrootdev}
 
-	partuuid=$(blkid -s PARTUUID -o value ${realrootdev})
-	parttype=$(blkid -s TYPE -o value ${rootdev})
-
-	echo "cp /mnt/usr/share/systemd/bootctl/arch.conf /mnt/boot/loader/entries"
-	echo "echo \"timeout 2\" >> /mnt/boot/loader/loader.conf"
-	echo "cp /mnt/usr/share/systemd/bootctl/loader.conf /mnt/boot/loader"
-	if [ "${luksroot}" = "1" ]; then
-		cryptuuid=$(blkid -s UUID -o value ${realrootdev})
-		echo "sed -i \"s/PARTUUID=XXXX/\\/dev\\/mapper\\/root/\" /mnt/boot/loader/entries/arch.conf"
-		echo "sed -i \"s/XXXX/${parttype}/\" /mnt/boot/loader/entries/arch.conf"
-		echo "sed -i \"s/root=/cryptdevice=UUID=${cryptuuid}:root root=/\" /mnt/boot/loader/entries/arch.conf"
-	else
-		echo "sed -i \"s/PARTUUID=XXXX/PARTUUID=${partuuid}/\" /mnt/boot/loader/entries/arch.conf"
-		echo "sed -i \"s/XXXX/${parttype}/\" /mnt/boot/loader/entries/arch.conf"
-	fi
-	echo "cp /mnt/boot/loader/entries/arch.conf /mnt/boot/loader/entries/arch-fallback.conf"
-	echo "sed -i \"s/Arch Linux/Arch Linux Fallback/\" /mnt/boot/loader/entries/arch-fallback.conf"
-	echo "sed -i \"s/initramfs-linux/initramfs-linux-fallback/\" /mnt/boot/loader/entries/arch-fallback.conf"
-
-	cp /mnt/usr/share/systemd/bootctl/loader.conf /mnt/boot/loader
-	echo "timeout 2" >> /mnt/boot/loader/loader.conf
-	cp /mnt/usr/share/systemd/bootctl/arch.conf /mnt/boot/loader/entries
-
-
-	if [ "${luksroot}" = "1" ]; then
-		sed -i "s/PARTUUID=XXXX/\/dev\/mapper\/root/" /mnt/boot/loader/entries/arch.conf
-		sed -i "s/XXXX/${parttype}/" /mnt/boot/loader/entries/arch.conf
-		sed -i "s/root=/cryptdevice=UUID=${cryptuuid}:root root=/" /mnt/boot/loader/entries/arch.conf
-	else
-		sed -i "s/PARTUUID=XXXX/PARTUUID=${partuuid}/" /mnt/boot/loader/entries/arch.conf
-		sed -i "s/XXXX/${parttype}/" /mnt/boot/loader/entries/arch.conf
+	rootparams=$(archrootparams)
+	kernels=$(archkernels)
+	if [ "${kernels}" = "" ]; then
+		echo "No kernel found in /mnt/boot"
+		pressanykey
+		return 1
 	fi
 
-	cp /mnt/boot/loader/entries/arch.conf /mnt/boot/loader/entries/arch-fallback.conf
-	sed -i "s/Arch Linux/Arch Linux Fallback/" /mnt/boot/loader/entries/arch-fallback.conf
-	sed -i "s/initramfs-linux/initramfs-linux-fallback/" /mnt/boot/loader/entries/arch-fallback.conf
+	# Without the mkinitcpio microcode hook, microcode must be loaded as a separate initrd
+	ucode=""
+	if [[ ! "$(archhooks)" =~ [\(\ ]microcode[\)\ ] ]]; then
+		for img in intel-ucode.img amd-ucode.img; do
+			if [ -f /mnt/boot/${img} ]; then
+				ucode="${ucode}initrd  /${img}\n"
+			fi
+		done
+	fi
+
+	echo ""
+	echo "/mnt/boot/loader/loader.conf"
+	printf "default arch-%s.conf\ntimeout 3\nconsole-mode max\neditor no\n" "$(echo "${kernels}" | head -n1)" > /mnt/boot/loader/loader.conf
+	cat /mnt/boot/loader/loader.conf
+
+	for kernel in ${kernels}; do
+		echo ""
+		echo "/mnt/boot/loader/entries/arch-${kernel}.conf"
+		printf "title   Arch Linux (%s)\nlinux   /vmlinuz-%s\n${ucode}initrd  /initramfs-%s.img\noptions %s rw\n" \
+			"${kernel}" "${kernel}" "${kernel}" "${rootparams}" > /mnt/boot/loader/entries/arch-${kernel}.conf
+		cat /mnt/boot/loader/entries/arch-${kernel}.conf
+		if [ -f /mnt/boot/initramfs-${kernel}-fallback.img ]; then
+			echo ""
+			echo "/mnt/boot/loader/entries/arch-${kernel}-fallback.conf"
+			printf "title   Arch Linux (%s, fallback)\nlinux   /vmlinuz-%s\n${ucode}initrd  /initramfs-%s-fallback.img\noptions %s rw\n" \
+				"${kernel}" "${kernel}" "${kernel}" "${rootparams}" > /mnt/boot/loader/entries/arch-${kernel}-fallback.conf
+			cat /mnt/boot/loader/entries/arch-${kernel}-fallback.conf
+		fi
+	done
 
 	pressanykey
 }
 archsystemdinstallchroot(){
-	echo "bootctl --path=/boot install"
-	bootctl --path=/boot install
+	echo "bootctl --esp-path=/boot install"
+	bootctl --esp-path=/boot install
+	echo "systemctl enable systemd-boot-update.service"
+	systemctl enable systemd-boot-update.service
 	isvbox=$(lspci | grep "VirtualBox G")
 	if [ "${isvbox}" ]; then
 		echo "VirtualBox detected, creating startup.nsh..."
@@ -1727,7 +1757,7 @@ archbootloaderrefindmenu(){
 		nextblitem=${1}
 	fi
 	options=()
-	options+=("${txtinstall//%1/refind}" "pacstrap refind-efi")
+	options+=("${txtinstall//%1/refind}" "pacstrap refind")
 	options+=("${txtedit//%1/refind_linux.conf}" "(${txtoptional})")
 	sel=$(dialog --backtitle "${apptitle}" --title "${txtbootloaderrefindmenu}" --cancel-button "${txtback}" --default-item "${nextblitem}" --menu "" 0 0 0 \
 		"${options[@]}" \
@@ -1751,17 +1781,16 @@ archrefindinstall(){
 	clear
 
 	echo "pacstrap /mnt refind"
-	echo "archchroot refindbootloaderinstall ${realrootdev}"
-	echo "echo \"\\\"Arch Linux         \\\" \\\"root=UUID=${rootuuid} rw add_efi_memmap\\\"\" > /mnt/boot/refind_linux.conf"
-	echo "echo \"\\\"Arch Linux Fallback\\\" \\\"root=UUID=${rootuuid} rw add_efi_memmap initrd=/initramfs-linux-fallback.img\\\"\" >> /mnt/boot/refind_linux.conf"
-	echo "echo \"\\\"Arch Linux Terminal\\\" \\\"root=UUID=${rootuuid} rw add_efi_memmap systemd.unit=multi-user.target\\\"\" >> /mnt/boot/refind_linux.conf"
-
-	pacstrap /mnt refind-efi
+	pacstrap /mnt refind
 	archchroot refindbootloaderinstall ${realrootdev}
-	rootuuid=$(blkid -s UUID -o value ${realrootdev})
-	echo "\"Arch Linux         \" \"root=UUID=${rootuuid} rw add_efi_memmap\"" > /mnt/boot/refind_linux.conf
-	echo "\"Arch Linux Fallback\" \"root=UUID=${rootuuid} rw add_efi_memmap initrd=/initramfs-linux-fallback.img\"" >> /mnt/boot/refind_linux.conf
-	echo "\"Arch Linux Terminal\" \"root=UUID=${rootuuid} rw add_efi_memmap systemd.unit=multi-user.target\"" >> /mnt/boot/refind_linux.conf
+
+	rootparams=$(archrootparams)
+	echo ""
+	echo "/mnt/boot/refind_linux.conf"
+	echo "\"Arch Linux         \" \"${rootparams} rw\"" > /mnt/boot/refind_linux.conf
+	echo "\"Arch Linux Fallback\" \"${rootparams} rw initrd=\\initramfs-%v-fallback.img\"" >> /mnt/boot/refind_linux.conf
+	echo "\"Arch Linux Terminal\" \"${rootparams} rw systemd.unit=multi-user.target\"" >> /mnt/boot/refind_linux.conf
+	cat /mnt/boot/refind_linux.conf
 	pressanykey
 }
 archrefindinstallchroot(){
@@ -1839,44 +1868,26 @@ installarchdi(){
 	fi
 }
 archdidownload(){
-	txtselectserver="Select source server :"
-	txtback="Back"
-	options=()
-	options+=("sourceforge.net" " (Recommended)")
-	options+=("github.com" "")
-	sel=$(dialog --backtitle "${apptitle}" --title "${txtselectserver}" --cancel-button "${txtback}" --menu "" 0 0 0 \
-		"${options[@]}" \
-		3>&1 1>&2 2>&3)
-	if [ "$?" = "0" ]; then
-		case ${sel} in
-			"sourceforge.net")
-				archdiurl=archdi.sourceforge.net/archdi
-			;;
-			"github.com")
-				archdiurl=matmoul.github.io/archdi >archdi
-			;;
-		esac
-	fi
-	echo "curl -L ${archdiurl} >archdi"
-	curl -L ${archdiurl} >archdi
+	echo "curl -fsSL ${archdiurl} -o archdi"
+	curl -fsSL ${archdiurl} -o archdi
 }
 archdiinstallandlaunchchroot(){
 	cd
-	archdidownload
+	archdidownload || exit 1
 	sh archdi -i
 	archdi --chroot
 	exit
 }
 archdilaunchchroot(){
 	cd
-	archdidownload
+	archdidownload || exit 1
 	sh archdi --chroot
 	rm archdi
 	exit
 }
 archdiinstallchroot(){
 	cd
-	archdidownload
+	archdidownload || exit 1
 	sh archdi -i
 	exit
 }
@@ -1897,8 +1908,6 @@ loadstrings(){
 	txtexit="Exit"
 	txtback="Back"
 	txtignore="Ignore"
-
-	txtselectserver="Select source server :"
 
 	txtmainmenu="Main Menu"
 	txtlanguage="Language"
@@ -1974,7 +1983,7 @@ loadstrings(){
 
 	txtbootloadergrubmenu="Grub Install Menu"
 	txtrungrubmakeconfig="Run grub-mkconfig ?"
-	txtgrubluksdetected="Encrypted root partion !\n\nAdd cryptdevice= to GRUB_CMDLINE_LINUX in /etc/default/grub ?"
+	txtgrubluksdetected="Encrypted root partition !\n\nAdd LUKS unlock parameter (rd.luks.name= or cryptdevice=) to GRUB_CMDLINE_LINUX in /etc/default/grub ?"
 
 	txtbootloadersyslinuxmenu="Syslinux Install Menu"
 	txtsyslinuxaddefibootmgr="EFI install require efibootmgr"
