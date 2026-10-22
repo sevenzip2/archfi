@@ -13,7 +13,7 @@
 # reference : https://wiki.archlinux.org/index.php/Installation_guide
 
 
-apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.09.19.03 (GPLv3)"
+apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.09.37.18 (GPLv3)"
 archdiurl=https://raw.githubusercontent.com/sevenzip2/archdi/master/archdi
 cpl=0
 fspkgs=""
@@ -502,9 +502,9 @@ formatdevices(){
 		if [ ! "${swapdev}" = "" ]; then
 			formatswapdevice swap ${swapdev}
 		fi
-		formatdevice root ${rootdev}
+		formatdevice root ${rootdev} || return 1
 		if [ ! "${homedev}" = "" ]; then
-			formatdevice home ${homedev}
+			formatdevice home ${homedev} || return 1
 		fi
 	fi
 }
@@ -543,8 +543,9 @@ formatbootdevice(){
 		;;
 		fat32)
 			fspkgs="${fspkgs[@]} dosfstools"
-			echo "mkfs.fat ${2}"
-			mkfs.fat ${2}
+			# Without -F 32, mkfs.fat picks FAT16 on small partitions
+			echo "mkfs.fat -F 32 ${2}"
+			mkfs.fat -F 32 ${2}
 		;;
 	esac
 	echo ""
@@ -647,9 +648,17 @@ formatdevice(){
 		;;
 		luks)
 			if [ -e /dev/mapper/${1} ]; then
-				# Opened by a previous format of this partition
+				# Opened by a previous format : format its partition again, not the mapping
+				luksdev=${2}
+				if [ "$(lsblk -dno TYPE ${2} 2>/dev/null)" = "crypt" ]; then
+					luksdev=$(luksparent ${2})
+				fi
 				echo "cryptsetup close ${1}"
-				cryptsetup close ${1}
+				if [ "${luksdev}" = "" ]||! cryptsetup close ${1}; then
+					pressanykey
+					return 1
+				fi
+				set -- ${1} ${luksdev}
 			fi
 			echo "${txtcreateluksdevice}"
 			echo "cryptsetup luksFormat ${2}"
@@ -691,7 +700,7 @@ formatdevice(){
 			pressanykey
 			formatdevice ${1} /dev/mapper/${1} noluks
 			if [ "${1}" = "root" ]; then
-				realrootdev=${rootdev}
+				realrootdev=${2}
 				rootdev=/dev/mapper/${1}
 				luksroot=1
 				luksrootuuid=$(cryptsetup luksUUID ${2})
@@ -729,10 +738,11 @@ selectbtrfscompress(){
 
 mountbtrfsroot(){
 	# Mount the @ layout created by archfi when present, else mount the device as is
+	# Returns 0 mounted, 1 not an archfi btrfs layout, 2 mount failed
 	if [ "$(blkid -s TYPE -o value ${rootdev})" != "btrfs" ]; then
 		return 1
 	fi
-	mount -o subvolid=5 ${rootdev} /mnt
+	mount -o subvolid=5 ${rootdev} /mnt || return 2
 	if [ ! -d /mnt/@ ]; then
 		umount /mnt
 		return 1
@@ -743,7 +753,7 @@ mountbtrfsroot(){
 		btrfsopts="noatime"
 	fi
 	echo "mount -o ${btrfsopts},subvol=@ ${rootdev} /mnt"
-	mount -o ${btrfsopts},subvol=@ ${rootdev} /mnt
+	mount -o ${btrfsopts},subvol=@ ${rootdev} /mnt || return 2
 	for subvol in ${subvols}; do
 		case ${subvol} in
 			@home) target=home;;
@@ -756,16 +766,34 @@ mountbtrfsroot(){
 			continue
 		fi
 		echo "mount --mkdir -o ${btrfsopts},subvol=${subvol} ${rootdev} /mnt/${target}"
-		mount --mkdir -o ${btrfsopts},subvol=${subvol} ${rootdev} /mnt/${target}
+		mount --mkdir -o ${btrfsopts},subvol=${subvol} ${rootdev} /mnt/${target} || return 2
 	done
 	return 0
 }
-
+# $1 : root, boot, home
+mountfailed(){
+	# Never install into the live system or the wrong /boot, undo what is mounted
+	echo ""
+	echo "${txtmountfailed//%1/${1}}"
+	umount -R /mnt 2>/dev/null
+	if [ ! "${swapdev}" = "" ]; then
+		swapoff ${swapdev} 2>/dev/null
+	fi
+	pressanykey
+	return 1
+}
 mountparts(){
 	clear
-	if ! mountbtrfsroot; then
+	mountbtrfsroot
+	result=$?
+	if [ "${result}" = "1" ]; then
 		echo "mount ${rootdev} /mnt"
 		mount ${rootdev} /mnt
+		result=$?
+	fi
+	if [ ! "${result}" = "0" ]||! mountpoint -q /mnt; then
+		mountfailed root
+		return 1
 	fi
 	echo "mkdir /mnt/{boot,home}"
 	mkdir /mnt/{boot,home} 2>/dev/null
@@ -778,6 +806,10 @@ mountparts(){
 			echo "mount ${bootdev} /mnt/boot"
 			mount ${bootdev} /mnt/boot
 		fi
+		if [ ! "$?" = "0" ]; then
+			mountfailed boot
+			return 1
+		fi
 	fi
 	if [ ! "${swapdev}" = "" ]; then
 		echo "swapon ${swapdev}"
@@ -785,7 +817,10 @@ mountparts(){
 	fi
 	if [ ! "${homedev}" = "" ]; then
 		echo "mount ${homedev} /mnt/home"
-		mount ${homedev} /mnt/home
+		if ! mount ${homedev} /mnt/home; then
+			mountfailed home
+			return 1
+		fi
 	fi
 	pressanykey
 	installmenu
@@ -1409,15 +1444,32 @@ archswapfile(){
 	else
 		swapfile=/swapfile
 		echo "fallocate -l ${size} /mnt${swapfile}"
-		echo "chmod 600 /mnt${swapfile}"
-		echo "mkswap -U clear /mnt${swapfile}"
-		fallocate -l ${size} /mnt${swapfile} && chmod 600 /mnt${swapfile} && mkswap -U clear /mnt${swapfile}
+		if ! fallocate -l ${size} /mnt${swapfile}; then
+			# Some file systems (jfs, ext2) have no fallocate, write the blocks
+			rm -f /mnt${swapfile}
+			mib=${size%?}
+			if [ "${size: -1}" = "G" ]; then
+				mib=$((mib * 1024))
+			fi
+			echo "dd if=/dev/zero of=/mnt${swapfile} bs=1M count=${mib} status=progress"
+			dd if=/dev/zero of=/mnt${swapfile} bs=1M count=${mib} status=progress
+		fi && {
+			echo "chmod 600 /mnt${swapfile}"
+			echo "mkswap -U clear /mnt${swapfile}"
+			chmod 600 /mnt${swapfile} && mkswap -U clear /mnt${swapfile}
+		}
 	fi
-	if [ "$?" = "0" ]&&! grep -q "^${swapfile} " /mnt/etc/fstab; then
+	result=$?
+	if [ ! "${result}" = "0" ]; then
+		rm -f /mnt${swapfile}
+		echo ""
+		echo "${txtswapfilefailed}"
+	elif ! grep -q "^${swapfile} " /mnt/etc/fstab; then
 		echo "echo \"${swapfile} none swap defaults 0 0\" >> /mnt/etc/fstab"
 		echo "${swapfile} none swap defaults 0 0" >> /mnt/etc/fstab
 	fi
 	pressanykey
+	return ${result}
 }
 
 archluksenroll(){
@@ -1854,8 +1906,17 @@ archsyslinuxinstallbootloaderchroot(){
 }
 archsyslinuxinstallbootloaderefichroot(){
 	if [ ! "${1}" = "none" ]; then
-		echo "cp -r /usr/lib/syslinux/efi64/* /boot/syslinux"
-		cp -r /usr/lib/syslinux/efi64/* /boot/syslinux
+		# 32-bit UEFI firmwares (some x86_64 machines) need the efi32 build
+		efidir=efi64
+		if [ "$(archefitarget)" = "i386" ]; then
+			efidir=efi32
+		fi
+		if [ ! -f /usr/lib/syslinux/${efidir}/syslinux.efi ]; then
+			echo "/usr/lib/syslinux/${efidir}/syslinux.efi not found"
+			exit 1
+		fi
+		echo "cp -r /usr/lib/syslinux/${efidir}/* /boot/syslinux"
+		cp -r /usr/lib/syslinux/${efidir}/* /boot/syslinux
 		efidisk=$(parentdisk ${1})
 		efipart=$(partnumber ${1})
 		echo "efibootmgr --create --disk ${efidisk} --part ${efipart} --loader /syslinux/syslinux.efi --label "Syslinux" --verbose"
@@ -2145,7 +2206,7 @@ archextrasmenu(){
 	options+=("nano" "" on)
 	options+=("vim" "" on)
 	options+=("dhcpcd" "" on)
-	options+=("networkmanager" "" off)
+	options+=("networkmanager" "(replaces the dhcpcd service)" off)
 	sel=$(dialog --backtitle "${apptitle}" --title "${txtextrasmenu}" --checklist "" 0 0 0 \
 		"${options[@]}" \
 		3>&1 1>&2 2>&3)
@@ -2157,11 +2218,11 @@ archextrasmenu(){
 	done
 	clear
 	pacstrapstep ${pkgs} || return 1
-	if [[ "${pkgs}" == *"dhcpcd"* ]]; then
-		archchroot enabledhcpcd
-	fi
+	# Only one service must manage the network, NetworkManager has its own DHCP client
 	if [[ "${pkgs}" == *"networkmanager"* ]]; then
 		archchroot enablenetworkmanager
+	elif [[ "${pkgs}" == *"dhcpcd"* ]]; then
+		archchroot enabledhcpcd
 	fi
 	pressanykey
 }
@@ -2173,7 +2234,11 @@ archenabledhcpcdchroot(){
 
 archenablenetworkmanagerchroot(){
 	echo "systemctl enable NetworkManager"
-	systemctl enable NetworkManager
+	systemctl enable NetworkManager || exit 1
+	if systemctl is-enabled -q dhcpcd 2>/dev/null; then
+		echo "systemctl disable dhcpcd"
+		systemctl disable dhcpcd
+	fi
 	exit
 }
 
@@ -2351,6 +2416,8 @@ loadstrings(){
 	txtswapfilesize="Swap file size (e.g. 512M, 4G) :"
 
 	txtpacstrapfailed="Package installation failed, this step is stopped."
+	txtswapfilefailed="Unable to create the swap file."
+	txtmountfailed="Unable to mount %1, check the partitions and their formats."
 	txtluksenroll="Enroll LUKS key"
 	txtluksenrolldesc="Unlock the encrypted root without passphrase.\nThe passphrase stays available as fallback.\n\nRun it before the bootloader step."
 	txtluksenrollsystemd="TPM2/FIDO2 unlock requires a systemd based initramfs (systemd and sd-encrypt hooks)."
