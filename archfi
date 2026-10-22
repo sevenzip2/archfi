@@ -1565,6 +1565,15 @@ archgrubinstall(){
 		fi
 	fi
 
+	# GRUB 2.16 lists every firmware boot entry (disks, CD-ROM, network...) as "EFI BootNext"
+	if [ "${eficomputer}" == "1" ]&&! grep -q '^GRUB_DISABLE_BOOTNEXT=' /mnt/etc/default/grub; then
+		if ! (dialog --backtitle "${apptitle}" --title "${txtinstall//%1/grub}" --defaultno --yesno "${txtgrubbootnext}" 0 0) then
+			clear
+			echo "echo \"GRUB_DISABLE_BOOTNEXT=true\" >> /mnt/etc/default/grub"
+			echo "GRUB_DISABLE_BOOTNEXT=true" >> /mnt/etc/default/grub
+		fi
+	fi
+
 	extraparams=$(archextraparams)
 	if [ "${extraparams}" != "" ]&&! grep -q "${extraparams}" /mnt/etc/default/grub; then
 		clear
@@ -2193,6 +2202,7 @@ loadstrings(){
 
 	txtbootloadergrubmenu="Grub Install Menu"
 	txtrungrubmakeconfig="Run grub-mkconfig ?"
+	txtgrubbootnext="Show the firmware boot entries (disks, CD-ROM, network boot...) as \"EFI BootNext\" items in the GRUB menu ?"
 	txtgrubluksdetected="Encrypted root partition !\n\nAdd LUKS unlock parameter (rd.luks.name= or cryptdevice=) to GRUB_CMDLINE_LINUX in /etc/default/grub ?"
 
 	txtbootloadersyslinuxmenu="Syslinux Install Menu"
