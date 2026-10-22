@@ -13,7 +13,7 @@
 # reference : https://wiki.archlinux.org/index.php/Installation_guide
 
 
-apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.10.20.13 (GPLv3)"
+apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.10.36.50 (GPLv3)"
 archdiurl=https://raw.githubusercontent.com/sevenzip2/archdi/master/archdi
 cpl=0
 fspkgs=""
@@ -1251,11 +1251,19 @@ archsetlocalechroot(){
 }
 
 archsettime(){
-	zones=$(timedatectl list-timezones)
-	items=$(echo "${zones}" | cut -d/ -f1 | sort -u)
+	# Canonical zones only : timedatectl also lists the links (legacy aliases like GMT, EST5EDT, ROK, Zulu,
+	# US/Eastern, Asia/Calcutta) and made the region menu scroll
+	if [ -f /usr/share/zoneinfo/tzdata.zi ]; then
+		zones=$(awk '$1=="Z" { print $2 }' /usr/share/zoneinfo/tzdata.zi | sort)
+	else
+		zones=$(timedatectl list-timezones)
+	fi
 	options=()
-	for item in ${items}; do
-		options+=("${item}" "")
+	options+=("UTC" "")
+	for item in Africa America Antarctica Arctic Asia Atlantic Australia Europe Indian Pacific; do
+		if echo "${zones}" | grep -q "^${item}/"; then
+			options+=("${item}" "")
+		fi
 	done
 
 	timezone=$(dialog --backtitle "${apptitle}" --title "${txtsettime}" --menu "" 0 0 0 \
