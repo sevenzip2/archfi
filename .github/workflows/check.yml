@@ -1,0 +1,26 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Every monday, packages get renamed or removed from the repositories
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: shellcheck (errors)
+        run: |
+          files=$(git ls-files | while read -r f; do if head -n1 "$f" | grep -qE '^#!/bin/(ba)?sh'; then echo "$f"; fi; done)
+          shellcheck -s bash -S error $files
+
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Package names exist in Arch repositories and AUR
+        run: python3 tools/check-packages.py --extra tools/packages.extra archfi

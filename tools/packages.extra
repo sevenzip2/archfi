@@ -1,0 +1,15 @@
+# Packages archfi installs from menus or variables, not from checklists
+arch-install-scripts
+dialog
+linux
+linux-lts
+linux-zen
+linux-hardened
+efibootmgr
+syslinux
+gptfdisk
+mtools
+zram-generator
+tpm2-tss
+libfido2
+sbctl
