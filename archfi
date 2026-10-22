@@ -13,7 +13,7 @@
 # reference : https://wiki.archlinux.org/index.php/Installation_guide
 
 
-apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.10.12.36 (GPLv3)"
+apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.10.20.13 (GPLv3)"
 archdiurl=https://raw.githubusercontent.com/sevenzip2/archdi/master/archdi
 cpl=0
 fspkgs=""
@@ -990,34 +990,28 @@ installbase(){
 		pkgs="$pkgs $(echo $itm | sed 's/"//g')"
 	done
 
+	# Tools for the file systems formatted here or already mounted in /mnt (partitions reused without format)
+	mountedfs=" ${fspkgs} $(findmnt -R -n -o FSTYPE /mnt 2>/dev/null | tr '\n' ' ') "
+	stack=" $(lsblk -s -n -l -o TYPE $(findmnt -R -n -o SOURCE /mnt 2>/dev/null | sed 's/\[.*//') 2>/dev/null | tr '\n' ' ') "
 	options=()
-	if [[ "${fspkgs}" == *"dosfstools"* ]]; then
-		options+=("dosfstools" "" on)
+	for fs in "dosfstools vfat" "btrfs-progs btrfs" "xfsprogs xfs" "f2fs-tools f2fs" "jfsutils jfs"; do
+		set -- ${fs}
+		if [[ "${mountedfs}" == *" ${1} "* ]]||[[ "${mountedfs}" == *" ${2} "* ]]; then
+			options+=("${1}" "" on)
+		else
+			options+=("${1}" "" off)
+		fi
+	done
+	if [[ "${stack}" == *" lvm "* ]]; then
+		options+=("lvm2" "" on)
 	else
-		options+=("dosfstools" "" off)
+		options+=("lvm2" "" off)
 	fi
-	if [[ "${fspkgs}" == *"btrfs-progs"* ]]; then
-		options+=("btrfs-progs" "" on)
+	if [[ "${stack}" == *" raid"* ]]; then
+		options+=("mdadm" "" on)
 	else
-		options+=("btrfs-progs" "" off)
+		options+=("mdadm" "" off)
 	fi
-	if [[ "${fspkgs}" == *"xfsprogs"* ]]; then
-		options+=("xfsprogs" "" on)
-	else
-		options+=("xfsprogs" "" off)
-	fi
-	if [[ "${fspkgs}" == *"f2fs-tools"* ]]; then
-		options+=("f2fs-tools" "" on)
-	else
-		options+=("f2fs-tools" "" off)
-	fi
-	if [[ "${fspkgs}" == *"jfsutils"* ]]; then
-		options+=("jfsutils" "" on)
-	else
-		options+=("jfsutils" "" off)
-	fi
-	options+=("lvm2" "" off)
-	options+=("mdadm" "" off)
 	sel=$(dialog --backtitle "${apptitle}" --title "${txtinstallarchlinuxfilesystems}" --checklist "" 0 0 0 \
 		"${options[@]}" \
 		3>&1 1>&2 2>&3)
@@ -2295,8 +2289,8 @@ archextrasmenu(){
 	options=()
 	options+=("nano" "" on)
 	options+=("vim" "" on)
-	# Preselect the network service already enabled on the new system
-	if [ -L /mnt/etc/systemd/system/multi-user.target.wants/NetworkManager.service ]; then
+	# Preselect the network service already enabled on the new system, dhcpcd alone can not join a Wi-Fi network
+	if [ -L /mnt/etc/systemd/system/multi-user.target.wants/NetworkManager.service ]||{ ls -d /sys/class/net/*/wireless &>/dev/null&&[ ! -L /mnt/etc/systemd/system/multi-user.target.wants/dhcpcd.service ]; }; then
 		options+=("dhcpcd" "" off)
 		options+=("networkmanager" "(replaces the dhcpcd service)" on)
 	else
