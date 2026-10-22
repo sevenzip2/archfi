@@ -1065,9 +1065,15 @@ archchroot(){
 	echo "arch-chroot /mnt /root"
 	cp ${0} /mnt/root
 	chmod 755 /mnt/root/$(basename "${0}")
-	echo "dialog is required for archfi, it will be installed as dep. Then it will removed when cleaning orphan."
-	echo "arch-chroot /mnt pacman -S --asdeps --needed --noconfirm dialog"
-	arch-chroot /mnt pacman -S --asdeps --needed --noconfirm dialog
+	# Only archdi needs dialog inside the new system, install it once
+	case ${1} in
+		archdi*)
+			if [ ! -x /mnt/usr/bin/dialog ]; then
+				echo "arch-chroot /mnt pacman -S --needed --noconfirm dialog"
+				arch-chroot /mnt pacman -S --needed --noconfirm dialog
+			fi
+		;;
+	esac
 	arch-chroot /mnt /root/$(basename "${0}") --chroot ${1} ${2}
 	rm /mnt/root/$(basename "${0}")
 	echo "exit"
