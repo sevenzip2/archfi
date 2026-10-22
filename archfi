@@ -13,7 +13,7 @@
 # reference : https://wiki.archlinux.org/index.php/Installation_guide
 
 
-apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.10.36.50 (GPLv3)"
+apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.10.47.39 (GPLv3)"
 archdiurl=https://raw.githubusercontent.com/sevenzip2/archdi/master/archdi
 cpl=0
 fspkgs=""
@@ -2374,21 +2374,21 @@ archdidownload(){
 archdiinstallandlaunchchroot(){
 	cd
 	archdidownload || exit 1
-	sh archdi -i
+	bash archdi -i
 	archdi --chroot
 	exit
 }
 archdilaunchchroot(){
 	cd
 	archdidownload || exit 1
-	sh archdi --chroot
+	bash archdi --chroot
 	rm archdi
 	exit
 }
 archdiinstallchroot(){
 	cd
 	archdidownload || exit 1
-	sh archdi -i
+	bash archdi -i
 	exit
 }
 # --------------------------------------------------------
