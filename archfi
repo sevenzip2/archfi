@@ -1886,6 +1886,7 @@ archsystemduki(){
 		fi
 		echo ""
 		echo "${preset}"
+		cp ${preset} ${preset}.archfi.bak
 		sed -i -e "s|^#\?default_uki=.*|default_uki=\"/boot/EFI/Linux/arch-${kernel}.efi\"|" \
 			-e "s|^#\?fallback_uki=.*|fallback_uki=\"/boot/EFI/Linux/arch-${kernel}-fallback.efi\"|" \
 			-e "s|^default_image=|#default_image=|" \
@@ -1894,12 +1895,37 @@ archsystemduki(){
 			echo "default_uki=\"/boot/EFI/Linux/arch-${kernel}.efi\"" >> ${preset}
 		fi
 		grep -E '^(PRESETS|default_uki|fallback_uki)=' ${preset}
-		# Images and type 1 entries replaced by the UKI
-		rm -f /mnt/boot/initramfs-${kernel}.img /mnt/boot/initramfs-${kernel}-fallback.img
-		rm -f /mnt/boot/loader/entries/arch-${kernel}.conf /mnt/boot/loader/entries/arch-${kernel}-fallback.conf
 	done
 	echo ""
 	archchroot genmkinitcpio
+
+	# Keep the current images and entries until every UKI is built (no space left, bad config...)
+	ukiok=1
+	for kernel in ${kernels}; do
+		if [ -f /mnt/etc/mkinitcpio.d/${kernel}.preset.archfi.bak ]&&[ ! -s /mnt/boot/EFI/Linux/arch-${kernel}.efi ]; then
+			ukiok=0
+		fi
+	done
+	for kernel in ${kernels}; do
+		preset=/mnt/etc/mkinitcpio.d/${kernel}.preset
+		if [ ! -f ${preset}.archfi.bak ]; then
+			continue
+		fi
+		if [ "${ukiok}" = "1" ]; then
+			# Images and type 1 entries replaced by the UKI
+			rm -f /mnt/boot/initramfs-${kernel}.img /mnt/boot/initramfs-${kernel}-fallback.img
+			rm -f /mnt/boot/loader/entries/arch-${kernel}.conf /mnt/boot/loader/entries/arch-${kernel}-fallback.conf
+			rm -f ${preset}.archfi.bak
+		else
+			mv ${preset}.archfi.bak ${preset}
+		fi
+	done
+	if [ "${ukiok}" = "0" ]; then
+		echo ""
+		echo "${txtukifailed}"
+		pressanykey
+		return 1
+	fi
 	sed -i "s/^default .*/default arch-$(echo "${kernels}" | head -n1).efi/" /mnt/boot/loader/loader.conf
 	echo ""
 	ls -l /mnt/boot/EFI/Linux
@@ -2244,6 +2270,7 @@ loadstrings(){
 
 	txtuki="Unified Kernel Image"
 	txtukirequiresystemdboot="Install systemd-boot first."
+	txtukifailed="Unified Kernel Image build failed, the presets are restored and the current boot entries are kept."
 	txtsecureboot="Secure Boot"
 	txtsecurebootdesc="Create and enroll your own Secure Boot keys with sbctl (Microsoft keys are kept).\n\nThe firmware must be in Setup Mode (clear the keys in the UEFI setup first).\nUsing a Unified Kernel Image is recommended.\n\nIf the root is unlocked by TPM2 (PCR 7), re-enroll it after the first Secure Boot start :\nsystemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 <device>\n\nContinue ?"
 	txtsecurebootnosetupmode="The firmware is not in Setup Mode, keys not enrolled."
