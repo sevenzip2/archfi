@@ -739,8 +739,14 @@ mountparts(){
 	echo "mkdir /mnt/{boot,home}"
 	mkdir /mnt/{boot,home} 2>/dev/null
 	if [ ! "${bootdev}" = "" ]; then
-		echo "mount ${bootdev} /mnt/boot"
-		mount ${bootdev} /mnt/boot
+		if [ "$(blkid -s TYPE -o value ${bootdev})" = "vfat" ]; then
+			# FAT has no permissions, keep the ESP (random seed, kernels) readable by root only
+			echo "mount --mkdir -o fmask=0077,dmask=0077 ${bootdev} /mnt/boot"
+			mount --mkdir -o fmask=0077,dmask=0077 ${bootdev} /mnt/boot
+		else
+			echo "mount ${bootdev} /mnt/boot"
+			mount ${bootdev} /mnt/boot
+		fi
 	fi
 	if [ ! "${swapdev}" = "" ]; then
 		echo "swapon ${swapdev}"
@@ -1906,8 +1912,13 @@ archsecurebootchroot(){
 		echo "sbctl sign -s -o ${efi}.signed ${efi}"
 		sbctl sign -s -o ${efi}.signed ${efi}
 	done
-	echo "bootctl --esp-path=/boot install"
-	bootctl --esp-path=/boot install
+	# bootctl may think arch-chroot is a container and skip the firmware boot entry
+	bootvars=auto
+	if [ -d /sys/firmware/efi/efivars ]; then
+		bootvars=yes
+	fi
+	echo "bootctl --esp-path=/boot --variables=${bootvars} install"
+	bootctl --esp-path=/boot --variables=${bootvars} install
 	for efi in /boot/EFI/BOOT/BOOT*.EFI /boot/EFI/systemd/systemd-boot*.efi /boot/EFI/Linux/*.efi /boot/vmlinuz-*; do
 		if [ -f ${efi} ]; then
 			echo "sbctl sign -s ${efi}"
@@ -1922,8 +1933,13 @@ archsecurebootchroot(){
 }
 
 archsystemdinstallchroot(){
-	echo "bootctl --esp-path=/boot install"
-	bootctl --esp-path=/boot install
+	# bootctl may think arch-chroot is a container and skip the firmware boot entry
+	bootvars=auto
+	if [ -d /sys/firmware/efi/efivars ]; then
+		bootvars=yes
+	fi
+	echo "bootctl --esp-path=/boot --variables=${bootvars} install"
+	bootctl --esp-path=/boot --variables=${bootvars} install
 	echo "systemctl enable systemd-boot-update.service"
 	systemctl enable systemd-boot-update.service
 	isvbox=$(lspci | grep "VirtualBox G")
