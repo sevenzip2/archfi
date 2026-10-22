@@ -7,7 +7,8 @@ Package names are collected from the scripts:
   - package groups             pacman -Sqg group
   - AUR clones                 git clone https://aur.archlinux.org/name.git
 A checklist item goes to the AUR when its case branch adds it to aurpkg, or
-when its description says (AUR).
+when its description says (AUR). Case branches that install a name are checked
+too, even when no checklist item uses them anymore.
 
 They are compared with the official repositories (core, extra, multilib) and
 the AUR. Names in the ignore file (one per line, # comments) are skipped.
@@ -104,13 +105,19 @@ def scan(paths):
             if not text.startswith('#!'):
                 continue
             routes, default = case_routes(text)
+            options = set()
             for name, desc in OPTION.findall(text):
+                options.add(name)
                 route = routes.get(name, default) or 'repo'
                 if route == 'skip':
                     continue
                 if '(AUR)' in desc:
                     route = 'aur'
                 yield path, name, route
+            # Case branches left behind when a checklist item was removed or renamed
+            for name, route in routes.items():
+                if name not in options and route in ('repo', 'aur'):
+                    yield path, name, route
             for match in LITERAL.finditer(text):
                 route = 'aur' if 'aurpkg' in match.group(0) else 'repo'
                 for name in match.group(1).split():
