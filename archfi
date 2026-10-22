@@ -14,10 +14,8 @@
 
 
 apptitle="Arch Linux Fast Install (archfi) - Version: 2022.11.21.01.44.43 (GPLv3)"
-baseurl=https://raw.githubusercontent.com/sevenzip2/archfi/master
 archdiurl=https://raw.githubusercontent.com/sevenzip2/archdi/master/archdi
 cpl=0
-skipfont="0"
 fspkgs=""
 
 
@@ -29,7 +27,6 @@ mainmenu(){
 		nextitem=${1}
 	fi
 	options=()
-	options+=("${txtlanguage}" "Language")
 	options+=("${txtsetkeymap}" "(loadkeys ...)")
 	options+=("${txteditor}" "(${txtoptional})")
 	options+=("${txtdiskpartmenu}" "")
@@ -41,10 +38,6 @@ mainmenu(){
 		3>&1 1>&2 2>&3)
 	if [ "$?" = "0" ]; then
 		case ${sel} in
-			"${txtlanguage}")
-				chooselanguage
-				nextitem="${txtsetkeymap}"
-			;;
 			"${txtsetkeymap}")
 				setkeymap
 				nextitem="${txtdiskpartmenu}"
@@ -77,45 +70,6 @@ mainmenu(){
 		mainmenu "${nextitem}"
 	else
 		clear
-	fi
-}
-
-chooselanguage(){
-	options=()
-	options+=("Arabic" "(By Mohammad Alawadi)")
-	options+=("Brazilian" "(By MaxWilliamJF)")
-	options+=("Chinese" "(By chery)")
-	options+=("Dutch" "(By bowero)")
-	options+=("English" "(By MatMoul)")
-	options+=("French" "(By MatMoul)")
-	options+=("German" "(By untergrundbiber)")
-	options+=("Greek" "(By quelotic)")
-	options+=("Italian" "(By thegoldgoat)")
-	options+=("Hungarian" "(By KardiWeb)")
-	options+=("Norwegian" "(By mrboen94)")
-	options+=("Polish" "(By dawidd6)")
-	options+=("Portuguese" "(By hugok)")
-	options+=("Russian" "(By Anonymous_Prodject)")
-	options+=("Spanish" "(By Mystogab)")
-	options+=("Turkish" "(By c0b41)")
-	sel=$(dialog --backtitle "${apptitle}" --title "${txtlanguage}" --menu "" 0 0 0 \
-		"${options[@]}" \
-		3>&1 1>&2 2>&3)
-	if [ "$?" = "0" ]; then
-		clear
-		loadstrings
-		if [ "${sel}" != "English" ]; then
-			loadlanguage "${sel}"
-		fi
-		if [ "${skipfont}" = "0" ]&&[ "${font}" != "" ]; then
-			setfont ${font}
-		fi
-		font=
-		if [ "$(cat /etc/locale.gen | grep ""#${locale}"")" != "" ]; then
-			sed -i "/#${locale}/s/^#//g" /etc/locale.gen
-			locale-gen
-		fi
-		export LANG=${locale}
 	fi
 }
 
@@ -152,28 +106,6 @@ chooseeditor(){
 		EDITOR=${sel}
 		pressanykey
 	fi
-}
-
-loadlanguage(){
-	# Language files are downloaded over HTTPS and only sourced when they
-	# contain plain variable assignments (no command substitution).
-	lngfile=$(mktemp /tmp/archfi-lng.XXXXXX)
-	echo "curl -fsSL ${baseurl}/lng/${1}"
-	if ! curl -fsSL "${baseurl}/lng/${1}" -o "${lngfile}"; then
-		echo "Error downloading language file ${1}"
-		rm -f "${lngfile}"
-		pressanykey
-		return 1
-	fi
-	if grep -qvE '^[[:space:]]*(#.*)?$|^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "${lngfile}" \
-		|| grep -qE '\$\(|`' "${lngfile}"; then
-		echo "Invalid language file ${1}, ignored"
-		rm -f "${lngfile}"
-		pressanykey
-		return 1
-	fi
-	source "${lngfile}"
-	rm -f "${lngfile}"
 }
 
 listkeymaps(){
@@ -2155,14 +2087,12 @@ pressanykey(){
 loadstrings(){
 
 	locale=en_US.UTF-8
-	#font=
 
 	txtexit="Exit"
 	txtback="Back"
 	txtignore="Ignore"
 
 	txtmainmenu="Main Menu"
-	txtlanguage="Language"
 	txtsetkeymap="Set Keyboard Layout"
 	txteditor="Editor"
 	txtdiskpartmenu="Disk Partitions"
@@ -2302,9 +2232,8 @@ while (( "$#" )); do
 			echo "archfi"
 			echo "------"
 			echo "-cpl | --custom-package-list url  Set custom package list url"     
-			echo "-sf | --skip-font                 Skip setfont from language files"
 			echo "-efiX                             -efi0 : disable EFI, -efi1 efi inst, -efi2 efi hybrid inst"
-			echo "-t | --test ghusername ghbranch   Test archfi script and language"
+			echo "-t | --test ghusername ghbranch   Test archfi script from a GitHub branch"
 			exit 0
 		;;
 		-cpl | --custom-package-list)
@@ -2315,13 +2244,11 @@ while (( "$#" )); do
 			fi
 			cpl=1
 		;;
-		-sf | --skip-font) skipfont=1;;
 		-t | --test)
 			curl -L https://raw.githubusercontent.com/${2}/archfi/${3}/archfi > archfi
-			sh archfi -tt ${2} ${3}
+			sh archfi
 			exit 0
 		;;
-		-tt) baseurl="https://raw.githubusercontent.com/${2}/archfi/${3}";;
 		-efi0) efimode=0;;
 		-efi1)
 			eficomputer=1

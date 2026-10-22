@@ -19,6 +19,7 @@ You can watch the original author's videos to see how to use it [here](https://w
 - LUKS root works with the systemd based initramfs (`sd-encrypt`), with optional TPM2 / FIDO2 unlock (systemd-cryptenroll)
 - systemd-boot with per kernel entries, optional Unified Kernel Images and Secure Boot (sbctl)
 - CPU microcode, 32-bit UEFI detection, GPT partition types for root auto-discovery
+- English only: the downloadable language files were removed
 
 ## How to use
 
