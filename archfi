@@ -196,7 +196,7 @@ rebootpc(){
 
 # --------------------------------------------------------
 selectdisk(){
-		items=$(lsblk -d -p -n -l -o NAME,SIZE -e 7,11)
+		items=$(lsblk -d -p -n -l -o NAME,SIZE,TYPE | awk '$3=="disk" && $1 !~ /zram/ { print $1" "$2 }')
 		options=()
 		IFS_ORIG=$IFS
 		IFS=$'\n'
@@ -245,7 +245,7 @@ diskpartmenu(){
 		options+=("${txtautoparts} (gpt,efi)" "")
 		options+=("${txtautoparts} (gpt)" "")
 		options+=("${txtautoparts} (dos)" "")
-		options+=("${txtautoparts} (gpt,bios+efi,noswap)" "")
+		options+=("${txtautoparts} (gpt,bios+efi,noswap)" "(legacy)")
 	fi
 	options+=("${txteditparts} (cfdisk)" "")
 	options+=("${txteditparts} (cgdisk)" "")
@@ -284,30 +284,47 @@ diskpartmenu(){
 }
 
 
+askswappart(){
+	# Returns 0 when a swap partition (size = RAM) must be created
+	dialog --backtitle "${apptitle}" --title "${1}" --yesno "${txtcreateswappart}" 0 0
+}
+
+getswapsize(){
+	echo "$(( $(grep MemTotal /proc/meminfo | awk '{ print $2 }') / 1024 ))M"
+}
+
+wipedisk(){
+	echo "${txtautopartclear}"
+	echo "wipefs -a ${1}"
+	wipefs -a ${1}
+}
+
 diskpartautodos(){
 		device=$(selectdisk "${txtautoparts} (dos)")
 	if [ "$?" = "0" ]; then
 		if (dialog --backtitle "${apptitle}" --title "${txtautoparts} (dos)" --defaultno --yesno "${txtautopartsconfirm//%1/${device}}" 0 0) then
+			askswappart "${txtautoparts} (dos)"
+			withswap=$?
 			clear
-			echo "${txtautopartclear}"
-			parted ${device} mklabel msdos
-			sleep 1
-			echo "${txtautopartcreate//%1/boot}"
-			echo -e "n\np\n\n\n+512M\na\nw" | fdisk ${device}
-			sleep 1
-			echo "${txtautopartcreate//%1/swap}"
-			swapsize=$(cat /proc/meminfo | grep MemTotal | awk '{ print $2 }')
-			swapsize=$((${swapsize}/1000))"M"
-			echo -e "n\np\n\n\n+${swapsize}\nt\n\n82\nw" | fdisk ${device}
-			sleep 1
-			echo "${txtautopartcreate//%1/root}"
-			echo -e "n\np\n\n\n\nw" | fdisk ${device}
-			sleep 1
+			wipedisk ${device}
+			layout="label: dos\n,512M,L,*\n"
+			if [ "${withswap}" = "0" ]; then
+				layout="${layout},$(getswapsize),S\n"
+			fi
+			layout="${layout},,L\n"
+			echo "${txtautopartcreate//%1/boot, swap, root}"
+			echo -e "${layout}"
+			echo -e "${layout}" | sfdisk ${device}
 			echo ""
 			pressanykey
 			bootdev=$(partdev ${device} 1)
-			swapdev=$(partdev ${device} 2)
-			rootdev=$(partdev ${device} 3)
+			if [ "${withswap}" = "0" ]; then
+				swapdev=$(partdev ${device} 2)
+				rootdev=$(partdev ${device} 3)
+			else
+				swapdev=
+				rootdev=$(partdev ${device} 2)
+			fi
 			efimode="0"
 		fi
 	fi
@@ -317,24 +334,32 @@ diskpartautogpt(){
 		device=$(selectdisk "${txtautoparts} (gpt)")
 	if [ "$?" = "0" ]; then
 		if (dialog --backtitle "${apptitle}" --title "${txtautoparts} (gpt)" --defaultno --yesno "${txtautopartsconfirm//%1/${device}}" 0 0) then
+			askswappart "${txtautoparts} (gpt)"
+			withswap=$?
 			clear
-			echo "${txtautopartclear}"
-			parted ${device} mklabel gpt
+			wipedisk ${device}
+			sgdisk -o ${device}
 			echo "${txtautopartcreate//%1/BIOS boot}"
-			sgdisk ${device} -n=1:0:+31M -t=1:ef02 -c=0:mbrboot
+			sgdisk ${device} -n=1:0:+31M -t=1:ef02 -c=1:mbrboot
 			echo "${txtautopartcreate//%1/boot}"
-			sgdisk ${device} -n=2:0:+512M -c=0:boot
-			echo "${txtautopartcreate//%1/swap}"
-			swapsize=$(cat /proc/meminfo | grep MemTotal | awk '{ print $2 }')
-			swapsize=$((${swapsize}/1000))"M"
-			sgdisk ${device} -n=3:0:+${swapsize} -t=3:8200 -c=0:swap
+			sgdisk ${device} -n=2:0:+1024M -t=2:8300 -c=2:boot
+			rootpart=3
+			if [ "${withswap}" = "0" ]; then
+				echo "${txtautopartcreate//%1/swap}"
+				sgdisk ${device} -n=3:0:+$(getswapsize) -t=3:8200 -c=3:swap
+				rootpart=4
+			fi
 			echo "${txtautopartcreate//%1/root}"
-			sgdisk ${device} -n=4:0:0 -c=0:root
+			sgdisk ${device} -n=${rootpart}:0:0 -t=${rootpart}:8304 -c=${rootpart}:root
 			echo ""
 			pressanykey
 			bootdev=$(partdev ${device} 2)
-			swapdev=$(partdev ${device} 3)
-			rootdev=$(partdev ${device} 4)
+			if [ "${withswap}" = "0" ]; then
+				swapdev=$(partdev ${device} 3)
+			else
+				swapdev=
+			fi
+			rootdev=$(partdev ${device} ${rootpart})
 			efimode="0"
 		fi
 	fi
@@ -344,22 +369,30 @@ diskpartautoefi(){
 		device=$(selectdisk "${txtautoparts} (gpt,efi)")
 	if [ "$?" = "0" ]; then
 		if (dialog --backtitle "${apptitle}" --title "${txtautoparts} (gpt,efi)" --defaultno --yesno "${txtautopartsconfirm//%1/${device}}" 0 0) then
+			askswappart "${txtautoparts} (gpt,efi)"
+			withswap=$?
 			clear
-			echo "${txtautopartclear}"
-			parted ${device} mklabel gpt
+			wipedisk ${device}
+			sgdisk -o ${device}
 			echo "${txtautopartcreate//%1/EFI boot}"
-			sgdisk ${device} -n=1:0:+1024M -t=1:ef00 -c=0:boot
-			echo "${txtautopartcreate//%1/swap}"
-			swapsize=$(cat /proc/meminfo | grep MemTotal | awk '{ print $2 }')
-			swapsize=$((${swapsize}/1000))"M"
-			sgdisk ${device} -n=2:0:+${swapsize} -t=2:8200 -c=0:swap
+			sgdisk ${device} -n=1:0:+1024M -t=1:ef00 -c=1:boot
+			rootpart=2
+			if [ "${withswap}" = "0" ]; then
+				echo "${txtautopartcreate//%1/swap}"
+				sgdisk ${device} -n=2:0:+$(getswapsize) -t=2:8200 -c=2:swap
+				rootpart=3
+			fi
 			echo "${txtautopartcreate//%1/root}"
-			sgdisk ${device} -n=3:0:0 -c=0:root
+			sgdisk ${device} -n=${rootpart}:0:0 -t=${rootpart}:8304 -c=${rootpart}:root
 			echo ""
 			pressanykey
 			bootdev=$(partdev ${device} 1)
-			swapdev=$(partdev ${device} 2)
-			rootdev=$(partdev ${device} 3)
+			if [ "${withswap}" = "0" ]; then
+				swapdev=$(partdev ${device} 2)
+			else
+				swapdev=
+			fi
+			rootdev=$(partdev ${device} ${rootpart})
 			efimode="1"
 		fi
 	fi
@@ -370,14 +403,14 @@ diskpartautoefiusb(){
 	if [ "$?" = "0" ]; then
 		if (dialog --backtitle "${apptitle}" --title "${txtautoparts} (gpt,efi)" --defaultno --yesno "${txtautopartsconfirm//%1/${device}}" 0 0) then
 			clear
-			echo "${txtautopartclear}"
-			parted ${device} mklabel gpt
+			wipedisk ${device}
+			sgdisk -o ${device}
 			echo "${txtautopartcreate//%1/EFI boot}"
 			sgdisk ${device} -n=1:0:+1024M -t=1:ef00
 			echo "${txtautopartcreate//%1/BIOS boot}"
 			sgdisk ${device} -n=2:0:+31M -t=2:ef02
 			echo "${txtautopartcreate//%1/root}"
-			sgdisk ${device} -n=3:0:0
+			sgdisk ${device} -n=3:0:0 -t=3:8304
 			echo "${txthybridpartcreate}"
 			echo -e "r\nh\n3\nN\n\nY\nN\nw\nY\n" | gdisk ${device}
 			echo ""
@@ -411,7 +444,7 @@ diskpartcgdisk(){
 
 # --------------------------------------------------------
 selectparts(){
-	items=$(lsblk -p -n -l -o NAME -e 7,11)
+	items=$(lsblk -p -n -l -o NAME,TYPE | awk '$2!="loop" && $2!="rom" && $1 !~ /zram/ { print $1 }')
 	options=()
 	for item in ${items}; do
 		options+=("${item}" "")
@@ -467,13 +500,6 @@ selectparts(){
 	msg=${msg}"root : "${rootdev}"\n"
 	msg=${msg}"home : "${homedev}"\n\n"
 	if (dialog --backtitle "${apptitle}" --title "${txtselectpartsmenu}" --yesno "${msg}" 0 0) then
-		isnvme=0
-		if [ "${bootdev::8}" == "/dev/nvm" ]; then
-			isnvme=1
-		fi
-		if [ "${rootdev::8}" == "/dev/nvm" ]; then
-			isnvme=1
-		fi
 		mountmenu
 	fi
 }
@@ -616,14 +642,23 @@ formatdevice(){
 			echo "mkfs.btrfs -f ${2}"
 			mkfs.btrfs -f ${2}
 			if [ "${1}" = "root" ]; then
+				# Flat layout (snapper/timeshift friendly): @ / @home / @snapshots / @var_log / @swap
+				subvols="@ @snapshots @var_log @swap"
+				if [ "${homedev}" = "" ]; then
+					subvols="@ @home @snapshots @var_log @swap"
+				fi
 				echo "mount ${2} /mnt"
-				echo "btrfs subvolume create /mnt/root"
-				echo "btrfs subvolume set-default /mnt/root"
-				echo "umount /mnt"
 				mount ${2} /mnt
-				btrfs subvolume create /mnt/root
-				btrfs subvolume set-default /mnt/root
+				for subvol in ${subvols}; do
+					echo "btrfs subvolume create /mnt/${subvol}"
+					btrfs subvolume create /mnt/${subvol}
+				done
+				echo "umount /mnt"
 				umount /mnt
+				pressanykey
+				selectbtrfscompress
+				clear
+				echo "btrfs mount options : ${btrfsopts}"
 			fi
 		;;
 		ext4)
@@ -664,8 +699,8 @@ formatdevice(){
 			pressanykey
 			echo ""
 			echo "${txtopenluksdevice}"
-			echo "cryptsetup luksOpen ${2} ${1}"
-			cryptsetup luksOpen ${2} ${1}
+			echo "cryptsetup open ${2} ${1}"
+			cryptsetup open ${2} ${1}
 			if [ ! "$?" = "0" ]; then
 				pressanykey
 				return 1
@@ -678,22 +713,17 @@ formatdevice(){
 				"${options[@]}" \
 				3>&1 1>&2 2>&3)
 			if [ "$?" = "0" ]; then
+				clear
 				case ${sel} in
 					normal)
-						echo "dd if=/dev/zero of=/dev/mapper/${1}"
-						dd if=/dev/zero of=/dev/mapper/${1} & PID=$! &>/dev/null
+						echo "dd if=/dev/zero of=/dev/mapper/${1} bs=1M status=progress"
+						dd if=/dev/zero of=/dev/mapper/${1} bs=1M status=progress
 					;;
 					fast)
-						echo "dd if=/dev/zero of=/dev/mapper/${1} bs=60M"
-						dd if=/dev/zero of=/dev/mapper/${1} bs=60M & PID=$! &>/dev/null
+						echo "dd if=/dev/zero of=/dev/mapper/${1} bs=64M oflag=direct status=progress"
+						dd if=/dev/zero of=/dev/mapper/${1} bs=64M oflag=direct status=progress
 					;;
 				esac
-				clear
-				sleep 1
-				while kill -USR1 ${PID} &>/dev/null
-				do
-					sleep 1
-				done
 			fi
 			echo ""
 			pressanykey
@@ -718,10 +748,62 @@ formatdevice(){
 	pressanykey
 }
 
+selectbtrfscompress(){
+	options=()
+	options+=("none" "${txtbtrfscompressnone}")
+	options+=("zstd:1" "${txtbtrfscompresszstd1}")
+	options+=("zstd" "${txtbtrfscompresszstd}")
+	options+=("lzo" "${txtbtrfscompresslzo}")
+	sel=$(dialog --backtitle "${apptitle}" --title "${txtbtrfscompress}" --default-item "none" --menu "" 0 0 0 \
+		"${options[@]}" \
+		3>&1 1>&2 2>&3)
+	result=$?
+	btrfsopts="noatime"
+	if [ "${result}" = "0" ]&&[ "${sel}" != "none" ]; then
+		btrfsopts="noatime,compress=${sel}"
+	fi
+}
+
+mountbtrfsroot(){
+	# Mount the @ layout created by archfi when present, else mount the device as is
+	if [ "$(blkid -s TYPE -o value ${rootdev})" != "btrfs" ]; then
+		return 1
+	fi
+	mount -o subvolid=5 ${rootdev} /mnt
+	if [ ! -d /mnt/@ ]; then
+		umount /mnt
+		return 1
+	fi
+	subvols=$(ls -d /mnt/@* | sed 's#^/mnt/##')
+	umount /mnt
+	if [ "${btrfsopts}" = "" ]; then
+		btrfsopts="noatime"
+	fi
+	echo "mount -o ${btrfsopts},subvol=@ ${rootdev} /mnt"
+	mount -o ${btrfsopts},subvol=@ ${rootdev} /mnt
+	for subvol in ${subvols}; do
+		case ${subvol} in
+			@home) target=home;;
+			@snapshots) target=.snapshots;;
+			@var_log) target=var/log;;
+			@swap) target=swap;;
+			*) continue;;
+		esac
+		if [ "${subvol}" = "@home" ]&&[ "${homedev}" != "" ]; then
+			continue
+		fi
+		echo "mount --mkdir -o ${btrfsopts},subvol=${subvol} ${rootdev} /mnt/${target}"
+		mount --mkdir -o ${btrfsopts},subvol=${subvol} ${rootdev} /mnt/${target}
+	done
+	return 0
+}
+
 mountparts(){
 	clear
-	echo "mount ${rootdev} /mnt"
-	mount ${rootdev} /mnt
+	if ! mountbtrfsroot; then
+		echo "mount ${rootdev} /mnt"
+		mount ${rootdev} /mnt
+	fi
 	echo "mkdir /mnt/{boot,home}"
 	mkdir /mnt/{boot,home} 2>/dev/null
 	if [ ! "${bootdev}" = "" ]; then
@@ -976,6 +1058,8 @@ archmenu(){
 	else
 		nextitem=${1}
 	fi
+	# Main steps in order, used to move the cursor to the next step
+	flow=("${txtsethostname}" "${txtsetkeymap}" "${txtsetlocale}" "${txtsettime}" "${txtsetrootpassword}" "${txtgenerate//%1/fstab}" "${txtswap}")
 	options=()
 	options+=("${txtsethostname}" "/etc/hostname")
 	options+=("${txtsetkeymap}" "/etc/vconsole.conf")
@@ -984,14 +1068,15 @@ archmenu(){
 	options+=("${txtsettime}" "/etc/localtime")
 	options+=("${txtsetrootpassword}" "")
 	options+=("${txtgenerate//%1/fstab}" "")
+	options+=("${txtswap}" "zram, swapfile (${txtoptional})")
 	if [ "${luksdrive}" = "1" ]; then
 		options+=("${txtgenerate//%1/crypttab}" "")
+		flow+=("${txtgenerate//%1/crypttab}")
 	fi
 	if [ "${luksroot}" = "1" ]; then
 		options+=("${txtgenerate//%1/mkinitcpio.conf-luks}" "(encrypt hooks)")
-	fi
-	if [ "${isnvme}" = "1" ]; then
-		options+=("${txtgenerate//%1/mkinitcpio.conf-nvme}" "(nvme module)")
+		options+=("${txtluksenroll}" "TPM2, FIDO2 (${txtoptional})")
+		flow+=("${txtgenerate//%1/mkinitcpio.conf-luks}" "${txtluksenroll}")
 	fi
 	options+=("${txtedit//%1/fstab}" "(${txtoptional})")
 	options+=("${txtedit//%1/crypttab}" "(${txtoptional})")
@@ -1000,103 +1085,39 @@ archmenu(){
 	options+=("${txtbootloader}" "")
 	options+=("${txtextrasmenu}" "")
 	options+=("archdi" "${txtarchdidesc}")
+	flow+=("${txtbootloader}" "${txtextrasmenu}" "archdi")
 	sel=$(dialog --backtitle "${apptitle}" --title "${txtarchinstallmenu}" --cancel-button "${txtback}" --default-item "${nextitem}" --menu "" 0 0 0 \
 		"${options[@]}" \
 		3>&1 1>&2 2>&3)
 	if [ "$?" = "0" ]; then
+		nextitem="${sel}"
+		for i in "${!flow[@]}"; do
+			if [ "${flow[${i}]}" = "${sel}" ]&&[ "${flow[$((i+1))]}" != "" ]; then
+				nextitem="${flow[$((i+1))]}"
+			fi
+		done
 		case ${sel} in
-			"${txtsethostname}")
-				archsethostname
-				nextitem="${txtsetkeymap}"
-			;;
-			"${txtsetkeymap}")
-				archsetkeymap
-				nextitem="${txtsetlocale}"
-			;;
+			"${txtsethostname}") archsethostname;;
+			"${txtsetkeymap}") archsetkeymap;;
 			"${txtsetfont}")
 				archsetfont
 				nextitem="${txtsetlocale}"
 			;;
-			"${txtsetlocale}")
-				archsetlocale
-				nextitem="${txtsettime}"
-			;;
-			"${txtsettime}")
-				archsettime
-				nextitem="${txtsetrootpassword}"
-			;;
-			"${txtsetrootpassword}")
-				archsetrootpassword
-				nextitem="${txtgenerate//%1/fstab}"
-			;;
-			"${txtgenerate//%1/fstab}")
-				archgenfstabmenu
-				if [ "${luksdrive}" = "1" ]; then
-					nextitem="${txtgenerate//%1/crypttab}"
-				else
-					if [ "${luksroot}" = "1" ]; then
-						nextitem="${txtgenerate//%1/mkinitcpio.conf-luks}"
-					else
-						if [ "${isnvme}" = "1" ]; then
-							nextitem="${txtgenerate//%1/mkinitcpio.conf-nvme}"
-						else
-							nextitem="${txtbootloader}"
-						fi
-					fi
-				fi
-			;;
-			"${txtgenerate//%1/crypttab}")
-				archgencrypttab
-				if [ "${luksroot}" = "1" ]; then
-					nextitem="${txtgenerate//%1/mkinitcpio.conf-luks}"
-				else
-					if [ "${isnvme}" = "1" ]; then
-						nextitem="${txtgenerate//%1/mkinitcpio.conf-nvme}"
-					else
-						nextitem="${txtbootloader}"
-					fi
-				fi
-			;;
-			"${txtgenerate//%1/mkinitcpio.conf-luks}")
-				archgenmkinitcpioluks
-				if [ "${isnvme}" = "1" ]; then
-					nextitem="${txtgenerate//%1/mkinitcpio.conf-nvme}"
-				else
-					nextitem="${txtbootloader}"
-				fi
-			;;
-			"${txtgenerate//%1/mkinitcpio.conf-nvme}")
-				archgenmkinitcpionvme
-				nextitem="${txtbootloader}"
-			;;
-			"${txtedit//%1/fstab}")
-				${EDITOR} /mnt/etc/fstab
-				nextitem="${txtedit//%1/fstab}"
-			;;
-			"${txtedit//%1/crypttab}")
-				${EDITOR} /mnt/etc/crypttab
-				nextitem="${txtedit//%1/crypttab}"
-			;;
-			"${txtedit//%1/mkinitcpio.conf}")
-				archeditmkinitcpio
-				nextitem="${txtedit//%1/mkinitcpio.conf}"
-			;;
-			"${txtedit//%1/mirrorlist}")
-				${EDITOR} /mnt/etc/pacman.d/mirrorlist
-				nextitem="${txtedit//%1/mirrorlist}"
-			;;
-			"${txtbootloader}")
-				archbootloadermenu
-				nextitem="${txtextrasmenu}"
-			;;
-			"${txtextrasmenu}")
-				archextrasmenu
-				nextitem="archdi"
-			;;
-			"archdi")
-				installarchdi
-				nextitem="archdi"
-			;;
+			"${txtsetlocale}") archsetlocale;;
+			"${txtsettime}") archsettime;;
+			"${txtsetrootpassword}") archsetrootpassword;;
+			"${txtgenerate//%1/fstab}") archgenfstabmenu;;
+			"${txtswap}") archswapmenu;;
+			"${txtgenerate//%1/crypttab}") archgencrypttab;;
+			"${txtgenerate//%1/mkinitcpio.conf-luks}") archgenmkinitcpioluks;;
+			"${txtluksenroll}") archluksenroll;;
+			"${txtedit//%1/fstab}") ${EDITOR} /mnt/etc/fstab;;
+			"${txtedit//%1/crypttab}") ${EDITOR} /mnt/etc/crypttab;;
+			"${txtedit//%1/mkinitcpio.conf}") archeditmkinitcpio;;
+			"${txtedit//%1/mirrorlist}") ${EDITOR} /mnt/etc/pacman.d/mirrorlist;;
+			"${txtbootloader}") archbootloadermenu;;
+			"${txtextrasmenu}") archextrasmenu;;
+			"archdi") installarchdi;;
 		esac
 		archmenu "${nextitem}"
 	fi
@@ -1313,6 +1334,11 @@ archgenfstabmenu(){
 				genfstab -t PARTLABEL -p /mnt > /mnt/etc/fstab
 			;;
 		esac
+		if grep -q 'subvol=' /mnt/etc/fstab; then
+			# subvolid= pins a subvolume id and breaks snapshot rollbacks, subvol= is enough
+			echo "sed -i 's/,subvolid=[0-9]*//' /mnt/etc/fstab"
+			sed -i 's/,subvolid=[0-9]*//' /mnt/etc/fstab
+		fi
 	fi
 	pressanykey
 }
@@ -1324,6 +1350,121 @@ archgencrypttab(){
 	pressanykey
 }
 
+archswapmenu(){
+	options=()
+	options+=("zram" "zram-generator, ${txtswapzramdesc}")
+	options+=("swapfile" "${txtswapfiledesc}")
+	sel=$(dialog --backtitle "${apptitle}" --title "${txtswap}" --cancel-button "${txtback}" --menu "" 0 0 0 \
+		"${options[@]}" \
+		3>&1 1>&2 2>&3)
+	if [ ! "$?" = "0" ]; then
+		return 1
+	fi
+	case ${sel} in
+		zram) archswapzram;;
+		swapfile) archswapfile;;
+	esac
+}
+archswapzram(){
+	clear
+	echo "pacstrap /mnt zram-generator"
+	pacstrap /mnt zram-generator
+	echo ""
+	echo "/mnt/etc/systemd/zram-generator.conf"
+	printf "[zram0]\nzram-size = min(ram / 2, 8192)\ncompression-algorithm = zstd\n" > /mnt/etc/systemd/zram-generator.conf
+	cat /mnt/etc/systemd/zram-generator.conf
+	echo ""
+	echo "/mnt/etc/sysctl.d/99-vm-zram-parameters.conf"
+	printf "vm.swappiness = 180\nvm.watermark_boost_factor = 0\nvm.watermark_scale_factor = 125\nvm.page-cluster = 0\n" > /mnt/etc/sysctl.d/99-vm-zram-parameters.conf
+	cat /mnt/etc/sysctl.d/99-vm-zram-parameters.conf
+	echo ""
+	echo "${txtswapzramzswap}"
+	pressanykey
+}
+archswapfile(){
+	size=$(dialog --backtitle "${apptitle}" --title "${txtswap}" --inputbox "${txtswapfilesize}" 0 0 "4G" 3>&1 1>&2 2>&3)
+	if [ ! "$?" = "0" ]; then
+		return 1
+	fi
+	clear
+	if [[ ! "${size}" =~ ^[1-9][0-9]*[MG]$ ]]; then
+		echo "${txtincorrectinput}"
+		pressanykey
+		return 1
+	fi
+	if [ "$(findmnt -no FSTYPE /mnt)" = "btrfs" ]; then
+		# A swapfile can not live in a snapshotted subvolume, use the @swap subvolume (or a nested one)
+		if [ ! -d /mnt/swap ]; then
+			echo "btrfs subvolume create /mnt/swap"
+			btrfs subvolume create /mnt/swap
+		fi
+		swapfile=/swap/swapfile
+		echo "btrfs filesystem mkswapfile --size ${size} --uuid clear /mnt${swapfile}"
+		btrfs filesystem mkswapfile --size ${size} --uuid clear /mnt${swapfile}
+	else
+		swapfile=/swapfile
+		echo "fallocate -l ${size} /mnt${swapfile}"
+		echo "chmod 600 /mnt${swapfile}"
+		echo "mkswap -U clear /mnt${swapfile}"
+		fallocate -l ${size} /mnt${swapfile} && chmod 600 /mnt${swapfile} && mkswap -U clear /mnt${swapfile}
+	fi
+	if [ "$?" = "0" ]&&! grep -q "^${swapfile} " /mnt/etc/fstab; then
+		echo "echo \"${swapfile} none swap defaults 0 0\" >> /mnt/etc/fstab"
+		echo "${swapfile} none swap defaults 0 0" >> /mnt/etc/fstab
+	fi
+	pressanykey
+}
+
+archluksenroll(){
+	if ! archsystemdinitramfs; then
+		dialog --backtitle "${apptitle}" --title "${txtluksenroll}" --msgbox "${txtluksenrollsystemd}" 0 0
+		return 1
+	fi
+	options=()
+	options+=("tpm2" "TPM2 (PCR 7)")
+	options+=("fido2" "FIDO2 security key")
+	sel=$(dialog --backtitle "${apptitle}" --title "${txtluksenroll}" --cancel-button "${txtback}" --menu "${txtluksenrolldesc}" 0 0 0 \
+		"${options[@]}" \
+		3>&1 1>&2 2>&3)
+	if [ ! "$?" = "0" ]; then
+		return 1
+	fi
+	clear
+	case ${sel} in
+		tpm2)
+			echo "pacstrap /mnt tpm2-tss"
+			pacstrap /mnt tpm2-tss
+		;;
+		fido2)
+			echo "pacstrap /mnt libfido2"
+			pacstrap /mnt libfido2
+		;;
+	esac
+	archchroot luksenroll${sel} ${realrootdev}
+	if systemd-cryptenroll ${realrootdev} 2>/dev/null | grep -q " ${sel}$"; then
+		luksenroll=${sel}
+		archchroot genmkinitcpio
+	fi
+	pressanykey
+}
+archluksenrolltpm2chroot(){
+	echo "systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 ${1}"
+	systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 ${1}
+	exit
+}
+archluksenrollfido2chroot(){
+	echo "systemd-cryptenroll --fido2-device=auto ${1}"
+	systemd-cryptenroll --fido2-device=auto ${1}
+	exit
+}
+
+archextraparams(){
+	if [ -f /mnt/etc/systemd/zram-generator.conf ]; then
+		# zswap in front of zram would compress pages twice
+		echo "zswap.enabled=0"
+	fi
+}
+
 archhooks(){
 	cat /mnt/etc/mkinitcpio.conf /mnt/etc/mkinitcpio.conf.d/*.conf 2>/dev/null | grep '^HOOKS=' | tail -n1
 }
@@ -1333,17 +1474,28 @@ archsystemdinitramfs(){
 }
 archcryptparams(){
 	if archsystemdinitramfs; then
-		echo "rd.luks.name=${luksrootuuid}=root"
+		if [ "${luksenroll}" != "" ]; then
+			echo "rd.luks.name=${luksrootuuid}=root rd.luks.options=${luksrootuuid}=${luksenroll}-device=auto"
+		else
+			echo "rd.luks.name=${luksrootuuid}=root"
+		fi
 	else
 		echo "cryptdevice=UUID=${luksrootuuid}:root"
 	fi
 }
 archrootparams(){
 	if [ "${luksroot}" = "1" ]; then
-		echo "$(archcryptparams) root=/dev/mapper/root"
+		params="$(archcryptparams) root=/dev/mapper/root"
 	else
-		echo "root=UUID=$(blkid -s UUID -o value ${rootdev})"
+		params="root=UUID=$(blkid -s UUID -o value ${rootdev})"
 	fi
+	if [ "$(findmnt -no FSTYPE /mnt)" = "btrfs" ]; then
+		subvol=$(findmnt -no OPTIONS /mnt | tr ',' '\n' | grep '^subvol=' | sed 's#^subvol=/\?##')
+		if [ "${subvol}" != "" ]; then
+			params="${params} rootflags=subvol=${subvol}"
+		fi
+	fi
+	echo "${params} $(archextraparams)" | sed 's/ *$//' 
 }
 archkernels(){
 	for kernel in /mnt/boot/vmlinuz-*; do
@@ -1363,14 +1515,6 @@ archgenmkinitcpioluks(){
 	archchroot genmkinitcpio
 	pressanykey
 }
-archgenmkinitcpionvme(){
-	clear
-	echo "sed -i \"s/MODULES=()/MODULES=(nvme)/g\" /mnt/etc/mkinitcpio.conf"
-	sed -i "s/MODULES=()/MODULES=(nvme)/g" /mnt/etc/mkinitcpio.conf
-	archchroot genmkinitcpio
-	pressanykey
-}
-
 archeditmkinitcpio(){
 	${EDITOR} /mnt/etc/mkinitcpio.conf
 	if (dialog --backtitle "${apptitle}" --title "${txtedit//%1/mkinitcpio.conf}" --yesno "${txtgenerate//%1/mkinitcpio} ?" 0 0) then
@@ -1394,7 +1538,7 @@ archbootloadermenu(){
 		options+=("refind" "")
 	fi
 	if [ "${efimode}" != "2" ]; then
-		options+=("syslinux" "")
+		options+=("syslinux" "(legacy)")
 	fi
 	sel=$(dialog --backtitle "${apptitle}" --title "${txtbootloadermenu}" --cancel-button "${txtback}" --menu "" 0 0 0 \
 		"${options[@]}" \
@@ -1471,6 +1615,14 @@ archgrubinstall(){
 		fi
 	fi
 
+	extraparams=$(archextraparams)
+	if [ "${extraparams}" != "" ]&&! grep -q "${extraparams}" /mnt/etc/default/grub; then
+		clear
+		echo "sed -i \"/^GRUB_CMDLINE_LINUX_DEFAULT=/ s/\\\"$/ ${extraparams}\\\"/\" /mnt/etc/default/grub"
+		sed -i "/^GRUB_CMDLINE_LINUX_DEFAULT=/ s/\"$/ ${extraparams}\"/" /mnt/etc/default/grub
+		pressanykey
+	fi
+
 	if [ "${luksroot}" = "1" ]; then
 		if (dialog --backtitle "${apptitle}" --title "${txtinstall//%1/grub}" --yesno "${txtgrubluksdetected}" 0 0) then
 			clear
@@ -1530,17 +1682,25 @@ archgrubinstallbootloader(){
 		fi
 	fi
 }
+archefitarget(){
+	# Some x86_64 machines ship a 32-bit UEFI firmware
+	if [ "$(cat /sys/firmware/efi/fw_platform_size 2>/dev/null)" = "32" ]; then
+		echo "i386"
+	else
+		echo "x86_64"
+	fi
+}
 archgrubinstallbootloaderchroot(){
 	if [ ! "${1}" = "none" ]; then
-		echo "grub-install --target=i386-pc --recheck ${1}"
-		grub-install --target=i386-pc --recheck ${1}
+		echo "grub-install --target=i386-pc ${1}"
+		grub-install --target=i386-pc ${1}
 	fi
 	exit
 }
 archgrubinstallbootloaderefichroot(){
 	if [ ! "${1}" = "none" ]; then
-		echo "grub-install --target=x86_64-efi --efi-directory=/boot --recheck ${1}"
-		grub-install --target=x86_64-efi --efi-directory=/boot --recheck ${1}
+		echo "grub-install --target=$(archefitarget)-efi --efi-directory=/boot"
+		grub-install --target=$(archefitarget)-efi --efi-directory=/boot
 		isvbox=$(lspci | grep "VirtualBox G")
 		if [ "${isvbox}" ]; then
 			echo "VirtualBox detected, creating startup.nsh..."
@@ -1551,10 +1711,10 @@ archgrubinstallbootloaderefichroot(){
 }
 archgrubinstallbootloaderefiusbchroot(){
 	if [ ! "${1}" = "none" ]; then
-		echo "grub-install --target=i386-pc --recheck ${1}"
-		grub-install --target=i386-pc --recheck ${1}
-		echo "grub-install --target=x86_64-efi --efi-directory=/boot --removable --recheck ${1}"
-		grub-install --target=x86_64-efi --efi-directory=/boot --removable --recheck ${1}
+		echo "grub-install --target=i386-pc ${1}"
+		grub-install --target=i386-pc ${1}
+		echo "grub-install --target=$(archefitarget)-efi --efi-directory=/boot --removable"
+		grub-install --target=$(archefitarget)-efi --efi-directory=/boot --removable
 		isvbox=$(lspci | grep "VirtualBox G")
 		if [ "${isvbox}" ]; then
 			echo "VirtualBox detected, creating startup.nsh..."
@@ -1670,6 +1830,8 @@ archbootloadersystemdbmenu(){
 	fi
 	options=()
 	options+=("${txtinstall//%1/systemd-boot}" "bootctl install")
+	options+=("${txtuki}" "mkinitcpio UKI (${txtoptional})")
+	options+=("${txtsecureboot}" "sbctl (${txtoptional})")
 	options+=("${txtedit//%1/loader.conf}" "(${txtoptional})")
 	options+=("${txtedit//%1/entries}" "(${txtoptional})")
 	sel=$(dialog --backtitle "${apptitle}" --title "${txtbootloadersystemdmenu}" --cancel-button "${txtback}" --default-item "${nextblitem}" --menu "" 0 0 0 \
@@ -1679,6 +1841,14 @@ archbootloadersystemdbmenu(){
 		case ${sel} in
 			"${txtinstall//%1/systemd-boot}")
 				archsystemdinstall
+				nextblitem="${txtuki}"
+			;;
+			"${txtuki}")
+				archsystemduki
+				nextblitem="${txtsecureboot}"
+			;;
+			"${txtsecureboot}")
+				archsecureboot
 				nextblitem="${txtedit//%1/loader.conf}"
 			;;
 			"${txtedit//%1/loader.conf}")
@@ -1737,6 +1907,88 @@ archsystemdinstall(){
 
 	pressanykey
 }
+archsystemduki(){
+	# Unified Kernel Images in /boot/EFI/Linux are found by systemd-boot without entries
+	clear
+	kernels=$(archkernels)
+	if [ "${kernels}" = "" ]||[ ! -d /mnt/boot/loader ]; then
+		echo "${txtukirequiresystemdboot}"
+		pressanykey
+		return 1
+	fi
+	rootparams=$(archrootparams)
+	echo "echo \"${rootparams} rw\" > /mnt/etc/kernel/cmdline"
+	mkdir -p /mnt/etc/kernel /mnt/boot/EFI/Linux
+	echo "${rootparams} rw" > /mnt/etc/kernel/cmdline
+	for kernel in ${kernels}; do
+		preset=/mnt/etc/mkinitcpio.d/${kernel}.preset
+		if [ ! -f ${preset} ]; then
+			continue
+		fi
+		echo ""
+		echo "${preset}"
+		sed -i -e "s|^#\?default_uki=.*|default_uki=\"/boot/EFI/Linux/arch-${kernel}.efi\"|" \
+			-e "s|^#\?fallback_uki=.*|fallback_uki=\"/boot/EFI/Linux/arch-${kernel}-fallback.efi\"|" \
+			-e "s|^default_image=|#default_image=|" \
+			-e "s|^fallback_image=|#fallback_image=|" ${preset}
+		if ! grep -q '^default_uki=' ${preset}; then
+			echo "default_uki=\"/boot/EFI/Linux/arch-${kernel}.efi\"" >> ${preset}
+		fi
+		grep -E '^(PRESETS|default_uki|fallback_uki)=' ${preset}
+		# Images and type 1 entries replaced by the UKI
+		rm -f /mnt/boot/initramfs-${kernel}.img /mnt/boot/initramfs-${kernel}-fallback.img
+		rm -f /mnt/boot/loader/entries/arch-${kernel}.conf /mnt/boot/loader/entries/arch-${kernel}-fallback.conf
+	done
+	echo ""
+	archchroot genmkinitcpio
+	sed -i "s/^default .*/default arch-$(echo "${kernels}" | head -n1).efi/" /mnt/boot/loader/loader.conf
+	echo ""
+	ls -l /mnt/boot/EFI/Linux
+	pressanykey
+}
+
+archsecureboot(){
+	if (dialog --backtitle "${apptitle}" --title "${txtsecureboot}" --defaultno --yesno "${txtsecurebootdesc}" 0 0) then
+		clear
+		echo "pacstrap /mnt sbctl"
+		pacstrap /mnt sbctl
+		archchroot secureboot
+		pressanykey
+	fi
+}
+archsecurebootchroot(){
+	if ! sbctl status --json | grep -q '"setup_mode": *true'; then
+		sbctl status
+		echo ""
+		echo "${txtsecurebootnosetupmode}"
+		exit
+	fi
+	echo "sbctl create-keys"
+	sbctl create-keys
+	# -m keeps the Microsoft keys, needed by many GPU/NIC option ROMs
+	echo "sbctl enroll-keys -m"
+	if ! sbctl enroll-keys -m; then
+		exit
+	fi
+	for efi in /usr/lib/systemd/boot/efi/systemd-boot*.efi; do
+		echo "sbctl sign -s -o ${efi}.signed ${efi}"
+		sbctl sign -s -o ${efi}.signed ${efi}
+	done
+	echo "bootctl --esp-path=/boot install"
+	bootctl --esp-path=/boot install
+	for efi in /boot/EFI/BOOT/BOOT*.EFI /boot/EFI/systemd/systemd-boot*.efi /boot/EFI/Linux/*.efi /boot/vmlinuz-*; do
+		if [ -f ${efi} ]; then
+			echo "sbctl sign -s ${efi}"
+			sbctl sign -s ${efi}
+		fi
+	done
+	echo "sbctl verify"
+	sbctl verify
+	echo ""
+	echo "${txtsecurebootdone}"
+	exit
+}
+
 archsystemdinstallchroot(){
 	echo "bootctl --esp-path=/boot install"
 	bootctl --esp-path=/boot install
@@ -2004,10 +2256,36 @@ loadstrings(){
 	txtinstall="Install %1"
 	txtenable="Enable %1"
 
+	txtcreateswappart="Create a swap partition (size = RAM) ?\n\nChoose No to use zram or a swap file later (Config Arch Linux > Swap)."
+
+	txtbtrfscompress="Btrfs compression"
+	txtbtrfscompressnone="No compression, no CPU overhead"
+	txtbtrfscompresszstd1="Fast, low CPU, good for NVMe"
+	txtbtrfscompresszstd="zstd:3, better ratio, more CPU"
+	txtbtrfscompresslzo="Fastest, lower ratio"
+
+	txtswap="Swap"
+	txtswapzramdesc="compressed swap in RAM"
+	txtswapfiledesc="swap file on the root file system"
+	txtswapzramzswap="zswap will be disabled (zswap.enabled=0) by the bootloader step."
+	txtswapfilesize="Swap file size (e.g. 512M, 4G) :"
+
+	txtluksenroll="Enroll LUKS key"
+	txtluksenrolldesc="Unlock the encrypted root without passphrase.\nThe passphrase stays available as fallback.\n\nRun it before the bootloader step."
+	txtluksenrollsystemd="TPM2/FIDO2 unlock requires a systemd based initramfs (systemd and sd-encrypt hooks)."
+
+	txtuki="Unified Kernel Image"
+	txtukirequiresystemdboot="Install systemd-boot first."
+	txtsecureboot="Secure Boot"
+	txtsecurebootdesc="Create and enroll your own Secure Boot keys with sbctl (Microsoft keys are kept).\n\nThe firmware must be in Setup Mode (clear the keys in the UEFI setup first).\nUsing a Unified Kernel Image is recommended.\n\nIf the root is unlocked by TPM2 (PCR 7), re-enroll it after the first Secure Boot start :\nsystemd-cryptenroll --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 <device>\n\nContinue ?"
+	txtsecurebootnosetupmode="The firmware is not in Setup Mode, keys not enrolled."
+	txtsecurebootdone="Enable Secure Boot in the UEFI setup after reboot."
+
 	txtpressanykey="Press any key to continue."
 
 	txtarchdidesc="Full desktop install script"
 	txtinstallarchdi="Arch Linux Desktop Install (archdi) is a second script who can help you to install a full workstation.\n\nYou can just launch the script or install it. Choose in the next menu."
+	txtarchdimenu="Arch Linux Desktop Install (archdi)"
 	txtarchdiinstallandlaunch="Install and run archdi"
 	txtarchdiinstall="Install archdi"
 	txtarchdilaunch="Launch archdi"
@@ -2067,6 +2345,8 @@ if [ "${chroot}" = "1" ]; then
 		'settimeutc') archsettimeutcchroot;;
 		'settimelocal') archsettimelocalchroot;;
 		'genmkinitcpio') archgenmkinitcpiochroot;;
+		'luksenrolltpm2') archluksenrolltpm2chroot ${args};;
+		'luksenrollfido2') archluksenrollfido2chroot ${args};;
 		'enabledhcpcd') archenabledhcpcdchroot;;
 		'enablenetworkmanager') archenablenetworkmanagerchroot;;
 		'grubinstall') archgrubinstallchroot;;
@@ -2076,6 +2356,7 @@ if [ "${chroot}" = "1" ]; then
 		'syslinuxbootloaderinstall') archsyslinuxinstallbootloaderchroot ${args};;
 		'syslinuxbootloaderefiinstall') archsyslinuxinstallbootloaderefichroot ${args};;
 		'systemdbootloaderinstall') archsystemdinstallchroot ${args};;
+		'secureboot') archsecurebootchroot;;
 		'refindbootloaderinstall') archrefindinstallchroot ${args};;
 		'archdiinstallandlaunch') archdiinstallandlaunchchroot;;
 		'archdiinstall') archdiinstallchroot;;
@@ -2084,9 +2365,10 @@ if [ "${chroot}" = "1" ]; then
 else
 	echo "Init pacman, please wait..."
 	systemctl start pacman-init.service
-	pacman -Sy --needed arch-install-scripts dialog
-	dmesg |grep efi: > /dev/null
-	if [ "$?" == "1" ]; then
+	if ! command -v pacstrap >/dev/null || ! command -v dialog >/dev/null; then
+		pacman -Sy --needed arch-install-scripts dialog
+	fi
+	if [ ! -d /sys/firmware/efi ]; then
 		if [ "${eficomputer}" != "1" ]; then
 			eficomputer=0
 		fi

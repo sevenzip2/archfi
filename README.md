@@ -12,6 +12,14 @@ At the end of this wizard, you can install or launch [archdi](https://github.com
 
 You can watch the original author's videos to see how to use it [here](https://www.youtube.com/playlist?list=PLytHgIKLV1caHlCrcTSkm5OF2WSVI1_Sq).
 
+## What's new in this fork
+
+- Btrfs flat subvolume layout (`@`, `@home`, `@snapshots`, `@var_log`, `@swap`) with optional compression (none, zstd:1, zstd, lzo)
+- Swap partition is optional in auto partitioning, plus zram (zram-generator) and swap file options
+- LUKS root works with the systemd based initramfs (`sd-encrypt`), with optional TPM2 / FIDO2 unlock (systemd-cryptenroll)
+- systemd-boot with per kernel entries, optional Unified Kernel Images and Secure Boot (sbctl)
+- CPU microcode, 32-bit UEFI detection, GPT partition types for root auto-discovery
+
 ## How to use
 
 First, boot with the [latest Arch Linux image](https://archlinux.org/download/) with a [bootable device](https://wiki.archlinux.org/title/USB_flash_installation_medium).
