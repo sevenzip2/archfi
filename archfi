@@ -13,7 +13,7 @@
 # reference : https://wiki.archlinux.org/index.php/Installation_guide
 
 
-apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.09.49.32 (GPLv3)"
+apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.10.12.36 (GPLv3)"
 archdiurl=https://raw.githubusercontent.com/sevenzip2/archdi/master/archdi
 cpl=0
 fspkgs=""
@@ -1742,18 +1742,32 @@ archgrubinstallbootloader(){
 				"${options[@]}" \
 				3>&1 1>&2 2>&3)
 			if [ "$?" = "0" ]; then
+				case ${sel} in
+					"BIOS") archcheckbiosboot ${device} || return 1;;
+					"EFI") archcheckesp || return 1;;
+					"BIOS+EFI") { archcheckbiosboot ${device}&&archcheckesp; } || return 1;;
+				esac
 				clear
 				case ${sel} in
 					"BIOS") archchroot grubbootloaderinstall ${device};;
 					"EFI") archchroot grubbootloaderefiinstall ${device};;
 					"BIOS+EFI") archchroot grubbootloaderefiusbinstall ${device};;
 				esac
+				result=$?
+				if [ ! "${result}" = "0" ]; then
+					echo ""
+					echo "${txtbootloaderfailed}"
+				fi
 				pressanykey
+				return ${result}
 			fi
 		else
+			archcheckbiosboot ${device} || return 1
 			clear
 			archchroot grubbootloaderinstall ${device}
+			result=$?
 			pressanykey
+			return ${result}
 		fi
 	fi
 }
@@ -1765,38 +1779,53 @@ archefitarget(){
 		echo "x86_64"
 	fi
 }
+# /boot is used as the ESP by systemd-boot and GRUB EFI, it must be a FAT file system
+archcheckesp(){
+	if [ ! "$(findmnt -no FSTYPE --target /mnt/boot)" = "vfat" ]; then
+		dialog --backtitle "${apptitle}" --title "ESP" --msgbox "${txtespnotfat}" 0 0
+		return 1
+	fi
+}
+# $1 : disk, GRUB for BIOS on a GPT disk needs a BIOS boot partition (EF02)
+archcheckbiosboot(){
+	if [ "$(lsblk -dno PTTYPE ${1} 2>/dev/null)" = "gpt" ]&&! lsblk -nlo PARTTYPE ${1} | grep -qi '^21686148-6449-6e6f-744e-656564454649$'; then
+		dialog --backtitle "${apptitle}" --title "BIOS" --msgbox "${txtnobiosbootpart//%1/${1}}" 0 0
+		return 1
+	fi
+}
 archgrubinstallbootloaderchroot(){
 	if [ ! "${1}" = "none" ]; then
 		echo "grub-install --target=i386-pc ${1}"
-		grub-install --target=i386-pc ${1}
+		grub-install --target=i386-pc ${1} || exit 1
 	fi
-	exit
+	exit 0
 }
 archgrubinstallbootloaderefichroot(){
 	if [ ! "${1}" = "none" ]; then
 		echo "grub-install --target=$(archefitarget)-efi --efi-directory=/boot"
-		grub-install --target=$(archefitarget)-efi --efi-directory=/boot
+		grub-install --target=$(archefitarget)-efi --efi-directory=/boot || exit 1
 		isvbox=$(lspci | grep "VirtualBox G")
 		if [ "${isvbox}" ]; then
 			echo "VirtualBox detected, creating startup.nsh..."
 			echo "\EFI\arch\grubx64.efi" > /boot/startup.nsh
 		fi
 	fi
-	exit
+	exit 0
 }
 archgrubinstallbootloaderefiusbchroot(){
 	if [ ! "${1}" = "none" ]; then
+		# Both must succeed, a BIOS failure must not hide behind the EFI install
 		echo "grub-install --target=i386-pc ${1}"
-		grub-install --target=i386-pc ${1}
+		grub-install --target=i386-pc ${1} || exit 1
 		echo "grub-install --target=$(archefitarget)-efi --efi-directory=/boot --removable"
-		grub-install --target=$(archefitarget)-efi --efi-directory=/boot --removable
+		grub-install --target=$(archefitarget)-efi --efi-directory=/boot --removable || exit 1
 		isvbox=$(lspci | grep "VirtualBox G")
 		if [ "${isvbox}" ]; then
 			echo "VirtualBox detected, creating startup.nsh..."
 			echo "\EFI\arch\grubx64.efi" > /boot/startup.nsh
 		fi
 	fi
-	exit
+	exit 0
 }
 
 
@@ -1831,7 +1860,22 @@ archbootloadersyslinuxbmenu(){
 		archbootloadersyslinuxbmenu "${nextblitem}"
 	fi
 }
+# Syslinux reads /boot itself : no compressed btrfs, no f2fs/jfs, the ESP (FAT) in EFI mode
+archchecksyslinuxboot(){
+	bootfs=$(findmnt -no FSTYPE --target /mnt/boot)
+	bootopts=$(findmnt -no OPTIONS --target /mnt/boot)
+	if [ "${efimode}" == "1" ]||[ "${efimode}" == "2" ]; then
+		supported="vfat"
+	else
+		supported="ext2 ext3 ext4 btrfs xfs vfat"
+	fi
+	if [[ ! " ${supported} " == *" ${bootfs} "* ]]||{ [ "${bootfs}" = "btrfs" ]&&[[ ",${bootopts}," == *",compress"* ]]; }; then
+		dialog --backtitle "${apptitle}" --title "Syslinux" --msgbox "${txtsyslinuxunsupported//%1/${bootfs} (${bootopts})}" 0 0
+		return 1
+	fi
+}
 archsyslinuxinstall(){
+	archchecksyslinuxboot || return 1
 	clear
 
 	if [ "${efimode}" == "1" ]||[ "${efimode}" == "2" ]; then
@@ -1987,8 +2031,14 @@ archbootloadersystemdbmenu(){
 	fi
 }
 archsystemdinstall(){
+	archcheckesp || return 1
 	clear
-	archchroot systemdbootloaderinstall ${realrootdev}
+	if ! archchroot systemdbootloaderinstall ${realrootdev}; then
+		echo ""
+		echo "${txtbootloaderfailed}"
+		pressanykey
+		return 1
+	fi
 
 	rootparams=$(archrootparams)
 	kernels=$(archkernels)
@@ -2008,12 +2058,37 @@ archsystemdinstall(){
 		done
 	fi
 
+	# A kernel converted to a Unified Kernel Image has no initramfs, systemd-boot finds its .efi
+	default=""
+	for kernel in ${kernels}; do
+		if [ -f /mnt/boot/initramfs-${kernel}.img ]; then
+			default=${default:-arch-${kernel}.conf}
+		elif [ -f /mnt/boot/EFI/Linux/arch-${kernel}.efi ]; then
+			default=${default:-arch-${kernel}.efi}
+		fi
+	done
+	if [ "${default}" = "" ]; then
+		echo "No initramfs or Unified Kernel Image found in /mnt/boot"
+		pressanykey
+		return 1
+	fi
+
 	echo ""
 	echo "/mnt/boot/loader/loader.conf"
-	printf "default arch-%s.conf\ntimeout 3\nconsole-mode max\neditor no\n" "$(echo "${kernels}" | head -n1)" > /mnt/boot/loader/loader.conf
+	printf "default %s\ntimeout 3\nconsole-mode max\neditor no\n" "${default}" > /mnt/boot/loader/loader.conf
 	cat /mnt/boot/loader/loader.conf
 
 	for kernel in ${kernels}; do
+		if [ ! -f /mnt/boot/initramfs-${kernel}.img ]; then
+			if [ -f /mnt/boot/EFI/Linux/arch-${kernel}.efi ]; then
+				echo ""
+				echo "${kernel} : /mnt/boot/EFI/Linux/arch-${kernel}.efi (Unified Kernel Image)"
+			else
+				echo ""
+				echo "${kernel} : no /mnt/boot/initramfs-${kernel}.img, no entry"
+			fi
+			continue
+		fi
 		echo ""
 		echo "/mnt/boot/loader/entries/arch-${kernel}.conf"
 		printf "title   Arch Linux (%s)\nlinux   /vmlinuz-%s\n${ucode}initrd  /initramfs-%s.img\noptions %s rw\n" \
@@ -2149,7 +2224,7 @@ archsystemdinstallchroot(){
 		bootvars=yes
 	fi
 	echo "bootctl --esp-path=/boot --variables=${bootvars} install"
-	bootctl --esp-path=/boot --variables=${bootvars} install
+	bootctl --esp-path=/boot --variables=${bootvars} install || exit 1
 	echo "systemctl enable systemd-boot-update.service"
 	systemctl enable systemd-boot-update.service
 	isvbox=$(lspci | grep "VirtualBox G")
@@ -2157,6 +2232,7 @@ archsystemdinstallchroot(){
 		echo "VirtualBox detected, creating startup.nsh..."
 		echo "\EFI\systemd\systemd-bootx64.efi" > /boot/startup.nsh
 	fi
+	exit 0
 }
 
 
@@ -2440,6 +2516,10 @@ loadstrings(){
 	txtswapfilesize="Swap file size (e.g. 512M, 4G) :"
 
 	txtpacstrapfailed="Package installation failed, this step is stopped."
+	txtespnotfat="UEFI boot loaders are installed in /boot, which must be the EFI system partition (FAT32).\n\nFormat the boot partition as fat32, or choose another boot loader."
+	txtnobiosbootpart="%1 is a GPT disk without a BIOS boot partition (type EF02, 1 MiB).\n\nGRUB can not be installed for BIOS, add this partition or choose EFI."
+	txtsyslinuxunsupported="Syslinux can not boot from this /boot : %1\n\nUse a separate /boot partition (ext4, or FAT32 for EFI), btrfs without compression, or another boot loader."
+	txtbootloaderfailed="Boot loader installation failed."
 	txtswapfilefailed="Unable to create the swap file."
 	txtmountfailed="Unable to mount %1, check the partitions and their formats."
 	txtluksenroll="Enroll LUKS key"
