@@ -875,7 +875,7 @@ paralleldownloads() {
 }
 
 installbase(){
-	pkgs="base"
+	pkgs="base sudo"
 	options=()
 	options+=("linux" "")
 	options+=("linux-lts" "")
