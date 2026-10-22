@@ -23,4 +23,4 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Package names exist in Arch repositories and AUR
-        run: python3 tools/check-packages.py --extra tools/packages.extra archfi
+        run: python3 tools/check-packages.py --extra tools/packages.extra --extra samples/custompackagelist archfi

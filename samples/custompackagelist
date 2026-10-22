@@ -7,7 +7,7 @@
 # archfi -cpl url_of_the_file
 
 # Some packages :
-neofetch
+fastfetch
 nmon
 lshw
 # base-devel

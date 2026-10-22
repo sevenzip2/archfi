@@ -13,7 +13,7 @@
 # reference : https://wiki.archlinux.org/index.php/Installation_guide
 
 
-apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.07.52.04 (GPLv3)"
+apptitle="Arch Linux Fast Install (archfi) - Version: 2026.10.22.09.19.03 (GPLv3)"
 archdiurl=https://raw.githubusercontent.com/sevenzip2/archdi/master/archdi
 cpl=0
 fspkgs=""
@@ -412,7 +412,7 @@ selectparts(){
 	if [ ! "$?" = "0" ]; then
 		return 1
 	fi
-	realrootdev=${rootdev}
+	setluksroot
 
 	homedev=$(dialog --backtitle "${apptitle}" --title "${txtselectpartsmenu}" --menu "${txtselectdevice//%1/home}" 0 0 0 \
 		"none" "-" \
@@ -425,6 +425,7 @@ selectparts(){
 			homedev=
 		fi
 	fi
+	setlukshome
 
 	msg="${txtselecteddevices}\n\n"
 	msg=${msg}"boot : "${bootdev}"\n"
@@ -439,6 +440,30 @@ selectparts(){
 
 
 
+# The encryption state belongs to the selected partitions, a previous selection must not leak
+# A LUKS device opened before (/dev/mapper/...) can be selected directly
+luksparent(){
+	lsblk -nlps -o NAME ${1} | sed -n 2p
+}
+setluksroot(){
+	realrootdev=${rootdev}
+	luksroot=
+	luksrootuuid=
+	luksenroll=
+	if [ "$(lsblk -dno TYPE ${rootdev} 2>/dev/null)" = "crypt" ]; then
+		realrootdev=$(luksparent ${rootdev})
+		luksroot=1
+		luksrootuuid=$(cryptsetup luksUUID ${realrootdev})
+	fi
+}
+setlukshome(){
+	luksdrive=
+	crypttab=
+	if [ "${homedev}" != "" ]&&[ "$(lsblk -dno TYPE ${homedev} 2>/dev/null)" = "crypt" ]; then
+		luksdrive=1
+		crypttab="\nhome    UUID=$(cryptsetup luksUUID $(luksparent ${homedev}))    none"
+	fi
+}
 # --------------------------------------------------------
 mountmenu(){
 	if [ "${1}" = "" ]; then
@@ -621,6 +646,11 @@ formatdevice(){
 			mkfs.jfs -f ${2}
 		;;
 		luks)
+			if [ -e /dev/mapper/${1} ]; then
+				# Opened by a previous format of this partition
+				echo "cryptsetup close ${1}"
+				cryptsetup close ${1}
+			fi
 			echo "${txtcreateluksdevice}"
 			echo "cryptsetup luksFormat ${2}"
 			cryptsetup luksFormat ${2}
@@ -665,6 +695,7 @@ formatdevice(){
 				rootdev=/dev/mapper/${1}
 				luksroot=1
 				luksrootuuid=$(cryptsetup luksUUID ${2})
+				luksenroll=
 			else
 				case ${1} in
 					home) homedev=/dev/mapper/${1} ;;
@@ -969,10 +1000,23 @@ installbase(){
 	clear
 	echo "pacstrap -K /mnt ${pkgs}"
 	pacstrap -K /mnt ${pkgs}
-	if [ ! -z $numpkg ]; then
+	result=$?
+	if [ "${result}" = "0" ]&&[ ! -z $numpkg ]; then
 		sed -i "s/.*ParallelDownloads.*/ParallelDownloads = ${numpkg}/" /mnt/etc/pacman.conf	
 	fi	
 	pressanykey
+	return ${result}
+}
+
+# Install packages in /mnt, the caller stops its step when this fails
+pacstrapstep(){
+	echo "pacstrap /mnt $*"
+	if ! pacstrap /mnt "$@"; then
+		echo ""
+		echo "${txtpacstrapfailed}"
+		pressanykey
+		return 1
+	fi
 }
 
 unmountdevices(){
@@ -1075,8 +1119,10 @@ archchroot(){
 		;;
 	esac
 	arch-chroot /mnt /root/$(basename "${0}") --chroot ${1} ${2}
+	result=$?
 	rm /mnt/root/$(basename "${0}")
 	echo "exit"
+	return ${result}
 }
 
 
@@ -1327,8 +1373,7 @@ archswapmenu(){
 }
 archswapzram(){
 	clear
-	echo "pacstrap /mnt zram-generator"
-	pacstrap /mnt zram-generator
+	pacstrapstep zram-generator || return 1
 	echo ""
 	echo "/mnt/etc/systemd/zram-generator.conf"
 	printf "[zram0]\nzram-size = min(ram / 2, 8192)\ncompression-algorithm = zstd\n" > /mnt/etc/systemd/zram-generator.conf
@@ -1392,12 +1437,10 @@ archluksenroll(){
 	clear
 	case ${sel} in
 		tpm2)
-			echo "pacstrap /mnt tpm2-tss"
-			pacstrap /mnt tpm2-tss
+			pacstrapstep tpm2-tss || return 1
 		;;
 		fido2)
-			echo "pacstrap /mnt libfido2"
-			pacstrap /mnt libfido2
+			pacstrapstep libfido2 || return 1
 		;;
 	esac
 	archchroot luksenroll${sel} ${realrootdev}
@@ -1553,23 +1596,20 @@ archbootloadergrubmenu(){
 
 archgrubinstall(){
 	clear
-	echo "pacstrap /mnt grub"
-	pacstrap /mnt grub
+	pacstrapstep grub || return 1
 	pressanykey
 
 	if [ "${eficomputer}" == "1" ]; then
 		if [ "${efimode}" == "1" ]||[ "${efimode}" == "2" ]; then
 			if (dialog --backtitle "${apptitle}" --title "${txtinstall//%1/efibootmgr}" --yesno "${txtefibootmgr}" 0 0) then
 				clear
-				echo "pacstrap /mnt efibootmgr"
-				pacstrap /mnt efibootmgr
+				pacstrapstep efibootmgr || return 1
 				pressanykey
 			fi
 		else
 			if (dialog --backtitle "${apptitle}" --title "${txtinstall//%1/efibootmgr}" --defaultno --yesno "${txtefibootmgr}" 0 0) then
 				clear
-				echo "pacstrap /mnt efibootmgr"
-				pacstrap /mnt efibootmgr
+				pacstrapstep efibootmgr || return 1
 				pressanykey
 			fi
 		fi
@@ -1745,17 +1785,56 @@ archsyslinuxinstall(){
 		fi
 	fi
 
-	echo "pacstrap /mnt syslinux ${additionalpkg}"
-	pacstrap /mnt syslinux ${additionalpkg}
+	pacstrapstep syslinux ${additionalpkg} || return 1
 	pressanykey
 
 	clear
-	echo "Updating /boot/syslinux/syslinux.cfg"
-	rootparams=$(archrootparams)
-	echo "sed -i \"/APPEND\ root=/c\    APPEND ${rootparams} rw\" /mnt/boot/syslinux/syslinux.cfg"
-	sed -i "/APPEND\ root=/c\    APPEND ${rootparams}\ rw" /mnt/boot/syslinux/syslinux.cfg
-
+	archsyslinuxentries
 	pressanykey
+}
+archsyslinuxentries(){
+	# The default syslinux.cfg only boots linux, write one entry per installed kernel
+	cfg=/mnt/boot/syslinux/syslinux.cfg
+	kernels=$(archkernels)
+	if [ "${kernels}" = "" ]||[ ! -f ${cfg} ]; then
+		echo "No kernel found in /mnt/boot"
+		return 1
+	fi
+	rootparams=$(archrootparams)
+
+	# Without the mkinitcpio microcode hook, microcode must be loaded before the initramfs
+	ucode=""
+	if [[ ! "$(archhooks)" =~ [\(\ ]microcode[\)\ ] ]]; then
+		for img in intel-ucode.img amd-ucode.img; do
+			if [ -f /mnt/boot/${img} ]; then
+				ucode="${ucode}../${img},"
+			fi
+		done
+	fi
+
+	# DEFAULT arch boots the first kernel
+	entries=""
+	label=arch
+	for kernel in ${kernels}; do
+		if [ "${entries}" != "" ]; then
+			label=arch-${kernel}
+		fi
+		entries+="LABEL ${label}\n    MENU LABEL Arch Linux (${kernel})\n    LINUX ../vmlinuz-${kernel}\n    APPEND ${rootparams} rw\n    INITRD ${ucode}../initramfs-${kernel}.img\n\n"
+		if [ -f /mnt/boot/initramfs-${kernel}-fallback.img ]; then
+			entries+="LABEL ${label}fallback\n    MENU LABEL Arch Linux (${kernel}, fallback)\n    LINUX ../vmlinuz-${kernel}\n    APPEND ${rootparams} rw\n    INITRD ${ucode}../initramfs-${kernel}-fallback.img\n\n"
+		fi
+	done
+	entries=$(printf '%b' "${entries}")
+
+	# Replace the arch* entries, keep the others (hdt, reboot, poweroff)
+	echo "Updating ${cfg}"
+	awk -v entries="${entries}" '
+		/^LABEL / { skip = ($2 ~ /^arch/); if (skip && !done) { print entries; print ""; done = 1 } }
+		/^[[:space:]]*$/ && skip { skip = 0; next }
+		!skip { print }
+		END { if (!done) { print ""; print entries } }
+	' ${cfg} > ${cfg}.new && mv ${cfg}.new ${cfg}
+	echo "${entries}"
 }
 archsyslinuxinstallbootloader(){
 	clear
@@ -1945,8 +2024,7 @@ archsystemduki(){
 archsecureboot(){
 	if (dialog --backtitle "${apptitle}" --title "${txtsecureboot}" --defaultno --yesno "${txtsecurebootdesc}" 0 0) then
 		clear
-		echo "pacstrap /mnt sbctl"
-		pacstrap /mnt sbctl
+		pacstrapstep sbctl || return 1
 		archchroot secureboot
 		pressanykey
 	fi
@@ -2037,8 +2115,7 @@ archbootloaderrefindmenu(){
 archrefindinstall(){
 	clear
 
-	echo "pacstrap /mnt refind"
-	pacstrap /mnt refind
+	pacstrapstep refind || return 1
 	archchroot refindbootloaderinstall ${realrootdev}
 
 	rootparams=$(archrootparams)
@@ -2079,8 +2156,7 @@ archextrasmenu(){
 		pkgs="$pkgs $(echo $itm | sed 's/"//g')"
 	done
 	clear
-	echo "pacstrap /mnt ${pkgs}"
-	pacstrap /mnt ${pkgs}
+	pacstrapstep ${pkgs} || return 1
 	if [[ "${pkgs}" == *"dhcpcd"* ]]; then
 		archchroot enabledhcpcd
 	fi
@@ -2274,6 +2350,7 @@ loadstrings(){
 	txtswapzramzswap="zswap will be disabled (zswap.enabled=0) by the bootloader step."
 	txtswapfilesize="Swap file size (e.g. 512M, 4G) :"
 
+	txtpacstrapfailed="Package installation failed, this step is stopped."
 	txtluksenroll="Enroll LUKS key"
 	txtluksenrolldesc="Unlock the encrypted root without passphrase.\nThe passphrase stays available as fallback.\n\nRun it before the bootloader step."
 	txtluksenrollsystemd="TPM2/FIDO2 unlock requires a systemd based initramfs (systemd and sd-encrypt hooks)."

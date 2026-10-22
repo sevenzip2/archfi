@@ -12,7 +12,7 @@ when its description says (AUR).
 They are compared with the official repositories (core, extra, multilib) and
 the AUR. Names in the ignore file (one per line, # comments) are skipped.
 
-Usage: check-packages.py [--ignore FILE] [--extra FILE] [--dbdir DIR] PATH...
+Usage: check-packages.py [--ignore FILE] [--extra FILE]... [--dbdir DIR] PATH...
 Exit status: 0 all names found, 1 problems found, 2 package lists unavailable.
 """
 import argparse
@@ -134,7 +134,7 @@ def read_names(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--ignore', help='file of names that are not packages')
-    parser.add_argument('--extra', help='file of extra repo package names to check')
+    parser.add_argument('--extra', action='append', default=[], help='file of extra repo package names to check (repeatable)')
     parser.add_argument('--dbdir', help='use core.db, extra.db, multilib.db, aur-packages.gz from this dir')
     parser.add_argument('paths', nargs='+')
     args = parser.parse_args()
@@ -147,7 +147,8 @@ def main():
 
     ignore = read_names(args.ignore)
     found = set(scan(args.paths))
-    found |= {('(extra list)', name, 'repo') for name in read_names(args.extra)}
+    for extra in args.extra:
+        found |= {(extra, name, 'repo') for name in read_names(extra)}
     problems = []
     for path, name, route in sorted(found, key=lambda x: (x[0], x[1])):
         if name in ignore or not NAME.match(name):
