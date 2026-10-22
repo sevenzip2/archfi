@@ -13,3 +13,9 @@ zram-generator
 tpm2-tss
 libfido2
 sbctl
+# File system tools preselected from the mounts (installbase loop)
+dosfstools
+btrfs-progs
+xfsprogs
+f2fs-tools
+jfsutils
